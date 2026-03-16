@@ -1,0 +1,111 @@
+/**
+ * App Component Styles
+ * 
+ * Purpose:
+ * Custom CSS styles specific to the main App component.
+ * Includes animations, transitions, and component-specific styling
+ * that aren't covered by Tailwind utility classes.
+ */
+
+/* Video Panel Specific Styles */
+.video-panel {
+  aspect-ratio: 16 / 9;
+  min-height: 300px;
+  position: relative;
+}
+
+/* Smooth fade-in animation for components */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-out;
+}
+
+/* Pulse animation for active status indicator */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Loading spinner animation */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Custom gradient backgrounds */
+.gradient-bg {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* Video element styling for smooth rendering */
+video {
+  object-fit: cover;
+  transform: scaleX(-1); /* Mirror effect for front-facing camera */
+}
+
+/* Canvas overlay for pose detection */
+canvas {
+  pointer-events: none; /* Allow clicks to pass through to video */
+}
+
+/* Modal backdrop blur effect */
+.modal-backdrop {
+  backdrop-filter: blur(4px);
+}
+
+/* Responsive video panel heights */
+@media (min-width: 768px) {
+  .video-panel {
+    min-height: 400px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .video-panel {
+    min-height: 500px;
+  }
+}
+
+
+
+/* Smooth height transitions for expanding elements */
+.transition-height {
+  transition: height 0.3s ease-in-out;
+}
+
+/* Shadow styles for elevated components */
+.elevated {
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1),
+              0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
+
+.elevated:hover {
+  box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1),
+              0 8px 10px -6px rgb(0 0 0 / 0.1);
+}

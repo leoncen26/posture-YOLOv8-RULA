@@ -1,0 +1,28 @@
+/**
+ * Global Styles
+ * 
+ * Purpose:
+ * Defines global CSS styles for the Posture Analysis System.
+ * Includes Tailwind CSS import and custom global configurations.
+ * 
+ * This file sets up:
+ * - Tailwind CSS framework
+ * - Custom font imports (if needed)
+ * - Global resets and base styles
+ * - Custom CSS utilities and animations
+ */
+
+/* Import Tailwind CSS */
+@import "tailwindcss";
+
+/* Custom Global Styles - Minimal to avoid conflicts */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Focus Styles for Accessibility */
+*:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
