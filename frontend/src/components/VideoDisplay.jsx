@@ -16,7 +16,7 @@ import VideoPanel from './VideoPanel';
 
 const VideoDisplay = ({ videoUrl, isActive }) => {
   return (
-    <div className="w-full max-w-5xl mx-auto mb-8">
+    <div className="w-full">
       {/* Single video panel displaying backend-processed stream */}
       <VideoPanel
         videoUrl={videoUrl}
@@ -25,9 +25,9 @@ const VideoDisplay = ({ videoUrl, isActive }) => {
       
       {/* Info Panel - Shows what the backend is analyzing */}
       {isActive && (
-        <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-          <h3 className="font-semibold text-blue-900 mb-2">📊 Real-Time Analysis Active</h3>
-          <div className="text-sm text-blue-800 space-y-1">
+        <div className="mt-3 p-3 bg-white border border-blue-100 rounded-xl shadow-sm">
+          <h3 className="font-semibold text-blue-900 text-sm mb-2">Real-Time Analysis Active</h3>
+          <div className="text-xs text-blue-800 space-y-1">
             <p>✓ Pose detection with YOLOv8</p>
             <p>✓ Joint angle calculations (elbow, upper arm, wrist, neck, trunk)</p>
             <p>✓ Official RULA scoring (Tables A, B, C)</p>

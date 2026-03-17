@@ -28,7 +28,7 @@ const HelpModal = ({ isOpen, onClose }) => {
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
           {/* Modal Header */}
-          <div className="flex items-center justify-between px-4! py-2! border-b">
+          <div className="flex items-center justify-between px-4 py-2 border-b">
             <h2 className="text-2xl font-bold text-gray-800">
               Posture Analysis System - Help
             </h2>
@@ -54,7 +54,7 @@ const HelpModal = ({ isOpen, onClose }) => {
           </div>
           
           {/* Modal Body */}
-          <div className="p-4! space-y-4!">
+          <div className="p-4 space-y-4">
             {/* Introduction */}
             <section>
               <h3 className="text-lg font-semibold text-gray-800 mb-2">
@@ -96,7 +96,7 @@ const HelpModal = ({ isOpen, onClose }) => {
             </section>
             
             {/* Privacy Notice */}
-            <section className="bg-blue-50 p-4! rounded-lg">
+            <section className="bg-blue-50 p-4 rounded-lg">
               <h3 className="text-lg font-semibold text-blue-800 mb-2">
                 Privacy Notice
               </h3>
@@ -108,10 +108,10 @@ const HelpModal = ({ isOpen, onClose }) => {
           </div>
           
           {/* Modal Footer */}
-          <div className="p-4! bg-gray-50">
+          <div className="p-4 bg-gray-50">
             <button
               onClick={onClose}
-              className="w-full px-6! py-3! bg-blue-500 text-white font-semibold rounded-lg! hover:bg-blue-600 transition-colors"
+              className="w-full px-6 py-3 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600 transition-colors"
             >
               Got it!
             </button>

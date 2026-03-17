@@ -1,245 +1,204 @@
 /**
- * RulaDisplay Component - Compact RULA Assessment Display
+ * RulaDisplay Component
  *
  * Purpose:
- * Displays real-time RULA (Rapid Upper Limb Assessment) scores
- * in a compact format that sits beside the video without scrolling.
- *
- * Features:
- * - Compact grid layout for all scores
- * - Color-coded risk classification
- * - Confidence indicator
- * - Clean, minimal design
- *
- * @param {Object} rulaData - RULA assessment data from backend
- * @returns {JSX.Element} Compact RULA display panel
+ * Shows all backend RULA data in a compact right-side panel.
+ * The UI is presentation-only; scoring logic remains in backend.
  */
 
 import React from 'react';
 
+const SCORE_LIMITS = {
+  upper_arm_score: 6,
+  lower_arm_score: 2,
+  wrist_score: 3,
+  neck_score: 4,
+  trunk_score: 4,
+  legs_score: 2,
+};
+
+const METRIC_CONFIG = [
+  { key: 'upper_arm_score', label: 'Upper Arm' },
+  { key: 'lower_arm_score', label: 'Lower Arm' },
+  { key: 'wrist_score', label: 'Wrist' },
+  { key: 'neck_score', label: 'Neck Position' },
+  { key: 'trunk_score', label: 'Trunk Angle' },
+  { key: 'legs_score', label: 'Legs Support' },
+];
+
+const getRiskColor = (color) => {
+  if (!color || color.length !== 3) return '#6b7280';
+  const [b, g, r] = color;
+  return `rgb(${r}, ${g}, ${b})`;
+};
+
+const getConfidenceColor = (conf) => {
+  if (conf >= 80) return '#16a34a';
+  if (conf >= 60) return '#d97706';
+  if (conf >= 40) return '#ea580c';
+  return '#dc2626';
+};
+
+const getMetricColor = (score, maxScore) => {
+  const ratio = maxScore > 0 ? score / maxScore : 0;
+  if (ratio <= 0.33) return '#16a34a';
+  if (ratio <= 0.66) return '#d97706';
+  return '#dc2626';
+};
+
+const getFeedback = (score) => {
+  if (score >= 1 && score <= 2) {
+    return {
+      title: 'Acceptable posture',
+      message: 'Posture is acceptable. Keep maintaining this position.',
+      suggestions: [
+        'Micro-break every 30-60 minutes',
+        'Keep monitor and keyboard in same setup',
+      ],
+      tone: 'text-green-700 bg-green-50 border-green-200',
+    };
+  }
+
+  if (score >= 3 && score <= 4) {
+    return {
+      title: 'Need investigation',
+      message: 'Some body segments show moderate strain. Improve setup soon.',
+      suggestions: [
+        'Align top of monitor near eye level',
+        'Keep elbows around 90-120 degrees',
+        'Use back support while sitting',
+      ],
+      tone: 'text-amber-700 bg-amber-50 border-amber-200',
+    };
+  }
+
+  if (score >= 5 && score <= 6) {
+    return {
+      title: 'Change required soon',
+      message: 'Risk is high enough to require ergonomic corrections soon.',
+      suggestions: [
+        'Adjust desk and chair height',
+        'Bring keyboard and mouse closer',
+        'Do stretching breaks more frequently',
+      ],
+      tone: 'text-orange-700 bg-orange-50 border-orange-200',
+    };
+  }
+
+  return {
+    title: 'Immediate action required',
+    message: 'Very high risk posture. Correct workstation setup immediately.',
+    suggestions: [
+      'Reset posture and seat position now',
+      'Pause and stretch neck, shoulders, back',
+      'Consult ergonomic guidance urgently',
+    ],
+    tone: 'text-red-700 bg-red-50 border-red-200',
+  };
+};
+
 const RulaDisplay = ({ rulaData }) => {
-  // Handle no person detected or no data
   if (!rulaData || !rulaData.detected) {
     return (
-      <div className="bg-white rounded-lg shadow-lg p-4 w-72 border-2 border-gray-200">
-        <h3 className="text-sm font-bold text-gray-700 mb-2">RULA ASSESSMENT</h3>
-        <p className="text-xs text-gray-500">
-          {rulaData?.message || 'Waiting for analysis...'}
-        </p>
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+        <div className="px-4 py-4 border-b border-gray-200 flex items-center justify-between">
+          <h3 className="text-xl font-semibold text-gray-900">RULA Assessment</h3>
+          <span className="text-[11px] font-semibold px-2 py-1 rounded bg-blue-100 text-blue-700">REAL-TIME</span>
+        </div>
+        <div className="p-4 text-sm text-gray-500">{rulaData?.message || 'Waiting for analysis...'}</div>
       </div>
     );
   }
 
-  // Convert BGR color from backend to RGB for CSS
-  const getRiskColor = (color) => {
-    if (!color || color.length !== 3) return '#999';
-    const [b, g, r] = color;
-    return `rgb(${r}, ${g}, ${b})`;
-  };
-
-  const riskColor = getRiskColor(rulaData.color);
-
-  // Get confidence data
   const confidence = rulaData.confidence || {};
   const avgConfidence = confidence.average_confidence || 0;
   const detectedKps = confidence.detected_keypoints || 0;
   const totalKps = confidence.total_keypoints || 17;
   const fps = rulaData.fps || 0;
-
-  // Determine confidence quality color
-  const getConfidenceColor = (conf) => {
-    if (conf >= 80) return '#10b981'; // Green - Excellent
-    if (conf >= 60) return '#f59e0b'; // Yellow - Good  
-    if (conf >= 40) return '#f97316'; // Orange - Fair
-    return '#ef4444'; // Red - Poor
-  };
-
-  // Determine FPS quality color
-  const getFpsColor = (fps) => {
-    if (fps >= 25) return '#10b981'; // Green - Excellent
-    if (fps >= 20) return '#f59e0b'; // Yellow - Good
-    if (fps >= 15) return '#f97316'; // Orange - Fair
-    return '#ef4444'; // Red - Poor
-  };
-
-  // Get feedback based on RULA score
-  const getFeedback = (score) => {
-    if (score >= 1 && score <= 2) {
-      return {
-        title: 'Acceptable Posture',
-        message: 'Your posture is within acceptable limits. Continue maintaining good ergonomic practices.',
-        suggestions: [
-          'Take regular breaks every 30-60 minutes',
-          'Maintain this posture to prevent future issues'
-        ],
-        bgColor: 'bg-green-50',
-        borderColor: 'border-green-200',
-        textColor: 'text-green-800'
-      };
-    } else if (score >= 3 && score <= 4) {
-      return {
-        title: 'Further Investigation Needed',
-        message: 'Your posture may require attention. Consider making adjustments to reduce strain.',
-        suggestions: [
-          'Adjust your monitor to eye level',
-          'Ensure your chair provides proper back support',
-          'Keep elbows close to your body at 90-120° angle'
-        ],
-        bgColor: 'bg-yellow-50',
-        borderColor: 'border-yellow-200',
-        textColor: 'text-yellow-800'
-      };
-    } else if (score >= 5 && score <= 6) {
-      return {
-        title: 'Changes Required Soon',
-        message: 'Your posture poses a risk. Make ergonomic improvements as soon as possible.',
-        suggestions: [
-          'Adjust desk and chair height immediately',
-          'Position keyboard and mouse within easy reach',
-          'Take frequent breaks to stretch and move',
-          'Consider consulting an ergonomics specialist'
-        ],
-        bgColor: 'bg-orange-50',
-        borderColor: 'border-orange-200',
-        textColor: 'text-orange-800'
-      };
-    } else if (score === 7) {
-      return {
-        title: 'Immediate Action Required',
-        message: 'Your posture is at high risk level. Take immediate corrective action to prevent injury.',
-        suggestions: [
-          'Stop and readjust your posture immediately',
-          'Consult with an ergonomics professional urgently',
-          'Review entire workstation setup',
-          'Take a break and perform stretching exercises',
-          'Consider using ergonomic equipment'
-        ],
-        bgColor: 'bg-red-50',
-        borderColor: 'border-red-200',
-        textColor: 'text-red-800'
-      };
-    }
-    return null;
-  };
-
+  const riskColor = getRiskColor(rulaData.color);
   const feedback = getFeedback(rulaData.final_score);
 
   return (
-    <div className="bg-white rounded-lg shadow-lg border-2 w-120! p-2 md:p-4! overflow-hidden" style={{ borderColor: riskColor }}>
-      {/* Header with Final Score */}
-      <div className="px-6 py-5 border-b" style={{ backgroundColor: riskColor + '15', borderBottomColor: riskColor }}>
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-lg font-bold text-gray-800">RULA SCORE</h3>
-          <div className="flex items-center gap-3 space-y-2!">
-            <span className="text-4xl font-bold" style={{ color: riskColor }}>
-              {rulaData.final_score}
-            </span>
-            <span className="text-base text-gray-500">/ 7</span>
-          </div>
-        </div>
-        <p className="text-base font-medium" style={{ color: riskColor }}>
-          {rulaData.classification}
-        </p>
+    <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+      <div className="px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-2">
+        <h3 className="text-xl font-semibold text-gray-900">RULA Assessment</h3>
+        <span className="text-[11px] font-semibold px-2 py-1 rounded bg-blue-100 text-blue-700">REAL-TIME</span>
       </div>
 
-      {/* Confidence Indicator */}
-      <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
-        <div className="flex items-center justify-between text-sm mb-3 space-y-2!">
-          <div className="flex items-center gap-3">
-            <span className="text-gray-700 font-medium">Quality: {avgConfidence}%</span>
-            <span className="text-gray-500">{detectedKps}/{totalKps} kps</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">FPS:</span>
-            <span className="font-bold text-base" style={{ color: getFpsColor(fps) }}>
-              {fps}
-            </span>
-          </div>
-        </div>
-        <div className="h-2.5 bg-gray-200 rounded-full overflow-hidden">
-          <div 
-            className="h-full rounded-full transition-all duration-300" 
-            style={{ 
-              width: `${avgConfidence}%`,
-              backgroundColor: getConfidenceColor(avgConfidence)
-            }}
-          />
-        </div>
-      </div>
+      <div className="p-4 space-y-4">
+        <div className="space-y-3">
+          {METRIC_CONFIG.map(({ key, label }) => {
+            const value = rulaData[key] ?? 0;
+            const maxScore = SCORE_LIMITS[key] || 1;
+            const percentage = Math.max(0, Math.min(100, (value / maxScore) * 100));
+            const metricColor = getMetricColor(value, maxScore);
 
-      {/* Compact Scores Grid */}
-      <div className="px-6 py-5 space-y-5">
-        {/* Joint Scores - 2 columns */}
-        <div className="space-y-4!">
-          <h4 className="text-sm font-semibold text-gray-700 mb-4">Joint Scores</h4>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-            <div className="flex justify-between items-center px-4! py-2.5! bg-blue-50 rounded-lg">
-              <span className="text-gray-700">Upper Arm</span>
-              <span className="font-bold text-blue-700 text-lg">{rulaData.upper_arm_score}</span>
-            </div>
-            <div className="flex justify-between items-center px-4! py-2.5! bg-blue-50 rounded-lg">
-              <span className="text-gray-700">Lower Arm</span>
-              <span className="font-bold text-blue-700 text-lg">{rulaData.lower_arm_score}</span>
-            </div>
-            <div className="flex justify-between items-center px-4! py-2.5! bg-blue-50 rounded-lg">
-              <span className="text-gray-700">Wrist</span>
-              <span className="font-bold text-blue-700 text-lg">{rulaData.wrist_score}</span>
-            </div>
-            <div className="flex justify-between items-center px-4! py-2.5! bg-purple-50 rounded-lg">
-              <span className="text-gray-700">Neck</span>
-              <span className="font-bold text-purple-700 text-lg">{rulaData.neck_score}</span>
-            </div>
-            <div className="flex justify-between items-center px-4! py-2.5! bg-purple-50 rounded-lg">
-              <span className="text-gray-700">Trunk</span>
-              <span className="font-bold text-purple-700 text-lg">{rulaData.trunk_score}</span>
-            </div>
-            <div className="flex justify-between items-center px-4! py-2.5! bg-purple-50 rounded-lg">
-              <span className="text-gray-700">Legs</span>
-              <span className="font-bold text-purple-700 text-lg">{rulaData.legs_score}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Table Scores */}
-        <div className="pt-4! border-t border-gray-200">
-          <h4 className="text-sm font-semibold text-gray-700 mb-4 ">RULA Tables</h4>
-          <div className="flex gap-4 text-sm">
-            <div className="flex-1 px-4 py-4 bg-green-50 rounded-lg border border-green-200">
-              <div className="text-gray-700 font-medium mb-2 p-2!">Score A</div>
-              <div className="text-3xl font-bold text-green-700  p-2!">{rulaData.score_a}</div>
-            </div>
-            <div className="flex-1 px-4 py-4 bg-orange-50 rounded-lg border border-orange-200">
-              <div className="text-gray-700 font-medium mb-2 p-2!">Score B</div>
-              <div className="text-3xl font-bold text-orange-700  p-2!">{rulaData.score_b}</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Feedback & Recommendations */}
-        {feedback && (
-          <div className={`pt-4 border-t border-gray-200`}>
-            <h4 className="text-sm font-semibold text-gray-700 mb-3">Feedback & Recommendations</h4>
-            <div className={`${feedback.bgColor} ${feedback.borderColor} border rounded-lg p-4`}>
-              <div className={`${feedback.textColor} font-semibold text-sm mb-2`}>
-                {feedback.title}
+            return (
+              <div key={key} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-gray-700">{label}</span>
+                  <span className="font-semibold" style={{ color: metricColor }}>
+                    Score: {value}
+                  </span>
+                </div>
+                <div className="h-2 rounded-full bg-gray-200 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{ width: `${percentage}%`, backgroundColor: metricColor }}
+                  />
+                </div>
               </div>
-              <p className="text-xs text-gray-700 mb-3 leading-relaxed">
-                {feedback.message}
-              </p>
-              <div className="space-y-1.5">
-                <p className="text-xs font-medium text-gray-600 mb-1">Suggestions:</p>
-                {feedback.suggestions.map((suggestion, index) => (
-                  <div key={index} className="flex items-start gap-2">
-                    <span className="text-xs text-gray-500 mt-0.5">•</span>
-                    <span className="text-xs text-gray-700 leading-relaxed flex-1">
-                      {suggestion}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            );
+          })}
+        </div>
+
+        <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-3 py-4 text-center">
+          <p className="text-[10px] uppercase tracking-wide text-gray-500 font-semibold">Grand Score Index</p>
+          <p className="text-5xl leading-none font-bold mt-2" style={{ color: riskColor }}>
+            {rulaData.final_score}
+          </p>
+          <p className="text-[10px] uppercase tracking-wide font-semibold mt-2" style={{ color: riskColor }}>
+            {rulaData.classification}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="rounded-lg border border-green-200 bg-green-50 p-2.5">
+            <p className="text-gray-600">Score A</p>
+            <p className="text-2xl font-bold text-green-700">{rulaData.score_a}</p>
           </div>
-        )}
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5">
+            <p className="text-gray-600">Score B</p>
+            <p className="text-2xl font-bold text-amber-700">{rulaData.score_b}</p>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <div className="flex items-center justify-between text-xs mb-2">
+            <span className="text-gray-600 font-medium">Detection quality: {avgConfidence}%</span>
+            <span className="text-gray-500">{detectedKps}/{totalKps} keypoints</span>
+          </div>
+          <div className="h-2 rounded-full bg-gray-200 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-300"
+              style={{ width: `${Math.min(100, avgConfidence)}%`, backgroundColor: getConfidenceColor(avgConfidence) }}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2 mt-2 text-[11px] text-gray-600">
+            <div>Neck flexion: {rulaData.neck_flexion ?? '-'}deg</div>
+            <div className="text-right">FPS: {fps}</div>
+          </div>
+        </div>
+
+        <div className={`rounded-lg border p-3 ${feedback.tone}`}>
+          <p className="text-xs font-semibold mb-1">{feedback.title}</p>
+          <p className="text-[11px] leading-relaxed mb-2">{feedback.message}</p>
+          <div className="space-y-1">
+            {feedback.suggestions.map((item) => (
+              <p key={item} className="text-[11px] leading-relaxed">- {item}</p>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );

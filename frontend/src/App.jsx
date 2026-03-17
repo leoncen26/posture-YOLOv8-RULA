@@ -45,6 +45,7 @@ function App() {
 
   // RULA data fetching hook
   const rulaData = useRulaData(isActive);
+  const latencyMs = rulaData?.fps ? Math.round(1000 / rulaData.fps) : null;
 
   // Modal state management
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
@@ -65,7 +66,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100">
+    <div className="min-h-screen bg-gray-100">
       {/* Help Button - Fixed position in top-right */}
       <HelpButton onClick={handleHelpClick} />
 
@@ -73,14 +74,14 @@ function App() {
       <HelpModal isOpen={isHelpModalOpen} onClose={handleCloseHelpModal} />
 
       {/* Main Content Container - Uses flexbox with gaps for proper spacing */}
-      <div className="container mx-auto px-4 py-8 flex flex-col gap-4 min-h-0">
+      <div className="max-w-350 mx-auto px-4 py-4 flex flex-col gap-4 min-h-screen">
         {/* Application Header/Title */}
         <Header />
 
         {/* Error Message Display */}
         {error && (
           <div className="flex justify-center w-full">
-            <div className="flex items-center justify-center gap-3 max-w-md mx-auto w-full p-4! bg-red-50 border border-red-200 rounded-lg">
+            <div className="flex items-center justify-center gap-3 max-w-md mx-auto w-full p-4 bg-red-50 border border-red-200 rounded-lg">
               <svg
                 className="w-6 h-6 text-red-500 shrink-0 mt-0.5"
                 fill="none"
@@ -102,47 +103,48 @@ function App() {
           </div>
         )}
 
-        {/* Video Display and RULA Assessment Section - Adjusted for better visibility */}
-        <div className="flex justify-center items-start gap-4 px-4">
+        {/* Video Display and RULA Assessment Section */}
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-4 items-start flex-1">
           {/* Video Display - Shows Flask backend processed stream */}
-          <div className="shrink-0 max-w-3xl">
+          <div className="min-w-0">
             <VideoDisplay videoUrl={videoUrl} isActive={isActive} />
           </div>
 
-          {/* RULA Assessment Display - Compact panel beside video with max height */}
-          {isActive && (
-            <div className="shrink-0 max-h-[70vh] overflow-y-auto">
-              <RulaDisplay rulaData={rulaData} />
-            </div>
-          )}
-        </div>
-
-        {/* Control Button Section - Backend connection toggle */}
-        <div className="mb-6">
-          <ControlButton
-            isActive={isActive}
-            isLoading={isLoading}
-            onClick={toggleWebcam}
-          />
-        </div>
-
-        {/* Status Information Display */}
-        {isActive && (
-          <div className="text-center">
-            <div className="inline-flex items-center gap-2 px-4 py-2 bg-green-50 border border-green-200 rounded-full">
-              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-sm text-green-700 font-medium">
-                Connected to Backend - Real-Time RULA Analysis Active
-              </span>
+          {/* RULA Assessment + Control */}
+          <div className="xl:sticky xl:top-4 space-y-3">
+            {isActive && (
+              <div className="max-h-[72vh] overflow-y-auto">
+                <RulaDisplay rulaData={rulaData} />
+              </div>
+            )}
+            <div className="bg-white border border-blue-200 rounded-2xl p-3 shadow-sm">
+              <ControlButton
+                isActive={isActive}
+                isLoading={isLoading}
+                onClick={toggleWebcam}
+                fullWidth
+              />
             </div>
           </div>
-        )}
-      </div>
+        </div>
 
-      {/* Footer */}
-      <footer className="text-center py-4! text-gray-500 text-sm">
-        <p>Posture Analysis System © 2026 | RULA Assessment Tool</p>
-      </footer>
+        {/* Bottom Status Bar */}
+        <div className="mt-auto bg-white border border-gray-200 rounded-xl px-4 py-3 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-gray-600">
+            <div className="flex items-center gap-4">
+              <div className="inline-flex items-center gap-2">
+                <span className={`w-2.5 h-2.5 rounded-full ${isActive ? "bg-green-500" : "bg-gray-300"}`} />
+                <span>{isActive ? "CONNECTED TO BACKEND" : "BACKEND IDLE"}</span>
+              </div>
+              <div>FPS: {rulaData?.fps ?? "--"}</div>
+              <div>LATENCY: {latencyMs ?? "--"}ms</div>
+            </div>
+            <div className="font-medium tracking-wide text-gray-500">
+              {isActive ? "REAL-TIME ANALYSIS ACTIVE" : "READY"}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

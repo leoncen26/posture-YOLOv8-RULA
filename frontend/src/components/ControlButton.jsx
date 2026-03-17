@@ -1,28 +1,29 @@
-const ControlButton = ({ isActive, onClick, isLoading = false }) => {
+const ControlButton = ({ isActive, onClick, isLoading = false, fullWidth = false }) => {
   /**
    * Determine button text based on current state
    */
   const getButtonText = () => {
     if (isLoading) return 'Initializing...';
-    if (isActive) return 'Matikan Webcam';
-    return 'Aktifkan Webcam';
+    if (isActive) return 'STOP CAMERA';
+    return 'START CAMERA';
   };
 
   /**
    * Determine button styling based on current state
    */
   const getButtonClasses = () => {
-    const baseClasses = 'px-6! py-3! mb-2! text-lg font-semibold rounded-lg transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105';
+    const widthClass = fullWidth ? 'w-full' : 'min-w-[260px]';
+    const baseClasses = `${widthClass} px-6 py-3 text-sm font-semibold rounded-xl transition-all duration-200 shadow-sm border`;
     
     if (isLoading) {
-      return `${baseClasses} bg-gray-400 text-white cursor-not-allowed`;
+      return `${baseClasses} bg-gray-300 border-gray-300 text-white cursor-not-allowed`;
     }
     
     if (isActive) {
-      return `${baseClasses} bg-red-500 text-white hover:bg-red-600`;
+      return `${baseClasses} bg-blue-600 border-blue-700 text-white hover:bg-blue-700`;
     }
     
-    return `${baseClasses} bg-blue-500 text-white hover:bg-blue-600`;
+    return `${baseClasses} bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700`;
   };
 
   return (
@@ -34,9 +35,9 @@ const ControlButton = ({ isActive, onClick, isLoading = false }) => {
         aria-label={getButtonText()}
       >
         {/* Button Icon (optional camera icon) */}
-        <span className="flex items-center gap-2">
+        <span className="flex items-center justify-center gap-2">
           <svg
-            className="w-6 h-6"
+            className="w-4 h-4"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -47,7 +48,7 @@ const ControlButton = ({ isActive, onClick, isLoading = false }) => {
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
+                d="M6 6l12 12M6 18L18 6"
               />
             ) : (
               // Camera icon
