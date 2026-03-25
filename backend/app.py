@@ -235,6 +235,33 @@ def calculate_upper_arm_flexion(shoulder, elbow):
     
     return angle
 
+def calculate_wrist_proxy_angle(elbow, wrist):
+    """
+    Estimate wrist deviation proxy using forearm orientation.
+
+    NOTE:
+    YOLOv8-Pose with 17 keypoints does not include finger/hand keypoints,
+    so true wrist bend cannot be measured directly. This proxy uses elbow->wrist
+    orientation and is mirrored for left/right symmetry.
+
+    Args:
+        elbow: (x, y) - elbow position
+        wrist: (x, y) - wrist position
+
+    Returns:
+        Proxy angle in degrees (0-90), where 0 is near-horizontal forearm.
+    """
+    if elbow is None or wrist is None:
+        return None
+
+    forearm_vector = np.array([wrist[0] - elbow[0], wrist[1] - elbow[1]], dtype=float)
+    forearm_magnitude = np.linalg.norm(forearm_vector)
+    if forearm_magnitude < 1e-6:
+        return None
+
+    # Mirror x and y to make left/right and direction symmetric.
+    return math.degrees(math.atan2(abs(forearm_vector[1]), abs(forearm_vector[0])))
+
 # ============================================================================
 # RULA SCORING FUNCTIONS
 # ============================================================================
@@ -858,47 +885,60 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.3, debug=False, draw_o
             rula_angles['is_arm_supported'] = is_arm_supported
             rula_angles['is_abducted'] = is_abducted
         
-        # WRIST ANGLE
+        # WRIST ANGLE (proxy): evaluate both sides and choose best visible side
         right_wr_kp = person_kps[right_wrist]
+        left_wr_kp = person_kps[left_wrist]
         
         wrist_conf_threshold = 0.5
+        wrist_candidates = []
+
+        if left_el[2] > wrist_conf_threshold and left_wr_kp[2] > wrist_conf_threshold:
+            left_wrist_angle = calculate_wrist_proxy_angle(
+                (left_el[0], left_el[1]),
+                (left_wr_kp[0], left_wr_kp[1])
+            )
+            if left_wrist_angle is not None:
+                left_conf = float((left_el[2] + left_wr_kp[2]) / 2.0)
+                wrist_candidates.append((left_wrist_angle, left_conf, 'L', left_wr_kp))
+
+                # Draw forearm and label
+                cv2.line(frame,
+                        (int(left_el[0]), int(left_el[1])),
+                        (int(left_wr_kp[0]), int(left_wr_kp[1])),
+                        (0, 200, 0), 2)
+                cv2.putText(frame, f"L Wrist*: {left_wrist_angle:.1f}deg",
+                           (int(left_wr_kp[0]) - 120, int(left_wr_kp[1]) + 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 220), 1)
+
         if right_el_kp[2] > wrist_conf_threshold and right_wr_kp[2] > wrist_conf_threshold:
-            # Calculate forearm vector (elbow → wrist)
-            forearm_vector = np.array([right_wr_kp[0] - right_el_kp[0],
-                                      right_wr_kp[1] - right_el_kp[1]])
-            
-            # Horizontal reference vector
-            horizontal_vector = np.array([1.0, 0.0])
-            
-            # Calculate angle between forearm and horizontal
-            forearm_magnitude = np.linalg.norm(forearm_vector)
-            if forearm_magnitude > 1e-6:
-                forearm_normalized = forearm_vector / forearm_magnitude
-                dot_product = np.dot(forearm_normalized, horizontal_vector)
-                dot_product = np.clip(dot_product, -1.0, 1.0)
-                wrist_angle = math.degrees(np.arccos(dot_product))
-                
-                # Draw forearm line (green)
+            right_wrist_angle = calculate_wrist_proxy_angle(
+                (right_el_kp[0], right_el_kp[1]),
+                (right_wr_kp[0], right_wr_kp[1])
+            )
+            if right_wrist_angle is not None:
+                right_conf = float((right_el_kp[2] + right_wr_kp[2]) / 2.0)
+                wrist_candidates.append((right_wrist_angle, right_conf, 'R', right_wr_kp))
+
+                # Draw forearm and label
                 cv2.line(frame,
                         (int(right_el_kp[0]), int(right_el_kp[1])),
                         (int(right_wr_kp[0]), int(right_wr_kp[1])),
-                        (0, 255, 0), 3)
-                
-                # Draw horizontal reference line
-                horizontal_ref_end = (right_wr_kp[0] + 80, right_wr_kp[1])
-                cv2.line(frame,
-                        (int(right_wr_kp[0]), int(right_wr_kp[1])),
-                        (int(horizontal_ref_end[0]), int(horizontal_ref_end[1])),
-                        (0, 255, 255), 1)
-                
-                # Display wrist angle
-                wrist_text = f"Wrist: {wrist_angle:.1f}°"
-                cv2.putText(frame, wrist_text,
-                           (int(right_wr_kp[0]) + 15, int(right_wr_kp[1]) + 5),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                
-                # Store for RULA
-                rula_angles['wrist'] = wrist_angle
+                        (0, 255, 0), 2)
+                cv2.putText(frame, f"R Wrist*: {right_wrist_angle:.1f}deg",
+                           (int(right_wr_kp[0]) + 10, int(right_wr_kp[1]) + 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 220), 1)
+
+        if wrist_candidates:
+            # Prefer the side with better confidence; use larger angle as tie-breaker.
+            selected_wrist_angle, _, selected_side, selected_wr = max(
+                wrist_candidates,
+                key=lambda x: (x[1], x[0])
+            )
+
+            rula_angles['wrist'] = selected_wrist_angle
+            cv2.putText(frame, f"Wrist side used: {selected_side}",
+                       (int(selected_wr[0]) + 10, int(selected_wr[1]) + 40),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         
         # NECK AND TRUNK ANGLES
         if (nose_kp[2] > conf_threshold and shoulder_center is not None and hip_center is not None):

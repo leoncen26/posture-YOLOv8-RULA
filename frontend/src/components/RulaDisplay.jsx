@@ -56,6 +56,8 @@ const getFeedback = (score) => {
         'Keep monitor and keyboard in same setup',
       ],
       tone: 'text-green-700 bg-green-50 border-green-200',
+      textColor: 'text-green-700',
+      pillClass: 'bg-green-100 text-green-700',
     };
   }
 
@@ -69,6 +71,8 @@ const getFeedback = (score) => {
         'Use back support while sitting',
       ],
       tone: 'text-amber-700 bg-amber-50 border-amber-200',
+      textColor: 'text-amber-700',
+      pillClass: 'bg-amber-100 text-amber-700',
     };
   }
 
@@ -82,6 +86,8 @@ const getFeedback = (score) => {
         'Do stretching breaks more frequently',
       ],
       tone: 'text-orange-700 bg-orange-50 border-orange-200',
+      textColor: 'text-orange-700',
+      pillClass: 'bg-orange-100 text-orange-700',
     };
   }
 
@@ -94,6 +100,8 @@ const getFeedback = (score) => {
       'Consult ergonomic guidance urgently',
     ],
     tone: 'text-red-700 bg-red-50 border-red-200',
+    textColor: 'text-red-700',
+    pillClass: 'bg-red-100 text-red-700',
   };
 };
 
@@ -126,40 +134,46 @@ const RulaDisplay = ({ rulaData }) => {
       </div>
 
       <div className="p-4 space-y-4">
-        <div className="space-y-3">
+        <div className="space-y-2">
           {METRIC_CONFIG.map(({ key, label }) => {
             const value = rulaData[key] ?? 0;
             const maxScore = SCORE_LIMITS[key] || 1;
-            const percentage = Math.max(0, Math.min(100, (value / maxScore) * 100));
             const metricColor = getMetricColor(value, maxScore);
 
             return (
-              <div key={key} className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-gray-700">{label}</span>
-                  <span className="font-semibold" style={{ color: metricColor }}>
-                    Score: {value}
-                  </span>
-                </div>
-                <div className="h-2 rounded-full bg-gray-200 overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-300"
-                    style={{ width: `${percentage}%`, backgroundColor: metricColor }}
-                  />
-                </div>
+              <div key={key} className="flex items-center justify-between text-sm py-1.5 border-b border-gray-100 last:border-b-0">
+                <span className="font-semibold text-gray-700">{label}</span>
+                <span className="font-semibold" style={{ color: metricColor }}>
+                  Score: {value}
+                </span>
               </div>
             );
           })}
         </div>
 
-        <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-3 py-4 text-center">
-          <p className="text-[10px] uppercase tracking-wide text-gray-500 font-semibold">Grand Score Index</p>
-          <p className="text-5xl leading-none font-bold mt-2" style={{ color: riskColor }}>
-            {rulaData.final_score}
-          </p>
-          <p className="text-[10px] uppercase tracking-wide font-semibold mt-2" style={{ color: riskColor }}>
-            {rulaData.classification}
-          </p>
+        <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-3 py-4">
+          <p className="text-[10px] uppercase tracking-wide text-gray-500 font-semibold text-center">Grand Score Index</p>
+          <div className="mt-2 grid grid-cols-[96px_1fr] gap-3 items-start">
+            <p className="text-5xl leading-none font-bold" style={{ color: riskColor }}>
+              {rulaData.final_score}
+            </p>
+            <div className="space-y-1">
+              <p className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: riskColor }}>
+                {rulaData.classification}
+              </p>
+              <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-semibold ${feedback.pillClass}`}>
+                {feedback.title}
+              </span>
+              <p className={`text-[11px] leading-relaxed ${feedback.textColor}`}>
+                {feedback.message}
+              </p>
+              <div className="space-y-0.5">
+                {feedback.suggestions.map((item) => (
+                  <p key={item} className="text-[10px] text-gray-600 leading-relaxed">- {item}</p>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -190,15 +204,6 @@ const RulaDisplay = ({ rulaData }) => {
           </div>
         </div>
 
-        <div className={`rounded-lg border p-3 ${feedback.tone}`}>
-          <p className="text-xs font-semibold mb-1">{feedback.title}</p>
-          <p className="text-[11px] leading-relaxed mb-2">{feedback.message}</p>
-          <div className="space-y-1">
-            {feedback.suggestions.map((item) => (
-              <p key={item} className="text-[11px] leading-relaxed">- {item}</p>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );

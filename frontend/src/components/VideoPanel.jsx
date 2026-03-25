@@ -50,7 +50,7 @@ const VideoPanel = ({ videoUrl, isActive }) => {
             src={videoUrl}
             alt="Pose Analysis Stream"
             className="w-full h-auto object-contain bg-gray-900"
-            style={{ maxHeight: '72vh' }}
+            style={{ maxHeight: '69vh' }}
           />
           
           {/* Live Indicator */}
