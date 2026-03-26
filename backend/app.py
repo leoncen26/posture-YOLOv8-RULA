@@ -685,45 +685,55 @@ def extract_keypoints(results, smoothed_keypoints=None):
     keypoints_data = results[0].keypoints.data.cpu().numpy()  # (num_persons, 17, 3)
     return keypoints_data
 
-def calculate_keypoint_confidence(keypoints, conf_threshold=0.3):
+def calculate_keypoint_confidence(keypoints, conf_threshold=0.5):
     """
-    Calculate average confidence of detected keypoints.
-    
+    Calculate average confidence of RULA-relevant keypoints for table manner analysis.
+
+    Only counts the 9 keypoints used for sitting posture RULA:
+    - Nose (0): for neck angle
+    - Shoulders (5, 6): for upper arm and trunk
+    - Elbows (7, 8): for lower arm angle
+    - Wrists (9, 10): for wrist angle
+    - Hips (11, 12): for trunk angle
+
     Args:
         keypoints: Keypoint array (17, 3) where [:, 2] is confidence
         conf_threshold: Minimum confidence to consider a keypoint as detected
-    
+
     Returns:
         Dictionary with confidence statistics
     """
+    # Define RULA-relevant keypoints for table manner (sitting posture)
+    RULA_KEYPOINT_INDICES = [0, 5, 6, 7, 8, 9, 10, 11, 12]  # 9 keypoints total
+
     if keypoints is None or len(keypoints) == 0:
         return {
             "average_confidence": 0.0,
             "detected_keypoints": 0,
-            "total_keypoints": 17
+            "total_keypoints": 9
         }
-    
-    # Extract confidence values (3rd column)
-    confidences = keypoints[:, 2]
-    
+
+    # Extract confidence values only for RULA-relevant keypoints
+    rula_confidences = keypoints[RULA_KEYPOINT_INDICES, 2]
+
     # Count keypoints above threshold
-    detected_count = np.sum(confidences > conf_threshold)
-    
+    detected_count = np.sum(rula_confidences > conf_threshold)
+
     # Calculate average confidence for detected keypoints
-    valid_confidences = confidences[confidences > conf_threshold]
+    valid_confidences = rula_confidences[rula_confidences > conf_threshold]
     avg_confidence = float(np.mean(valid_confidences)) if len(valid_confidences) > 0 else 0.0
-    
+
     return {
         "average_confidence": round(avg_confidence * 100, 1),  # Convert to percentage
         "detected_keypoints": int(detected_count),
-        "total_keypoints": 17
+        "total_keypoints": 9
     }
 
 # ============================================================================
 # VISUALIZATION FUNCTIONS
 # ============================================================================
 
-def draw_pose_and_rula(frame, keypoints, conf_threshold=0.3, debug=False, draw_overlay=False):
+def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_overlay=False):
     """
     Draw keypoints, calculate angles, and optionally display RULA scores on the frame.
     
@@ -1184,7 +1194,7 @@ def generate_frames():
             
             # Draw pose and RULA analysis using cached result (smooth for skipped frames)
             if last_inference_result is not None:
-                frame, rula_data = draw_pose_and_rula(frame, last_inference_result, conf_threshold=0.3, draw_overlay=False)
+                frame, rula_data = draw_pose_and_rula(frame, last_inference_result, conf_threshold=0.5, draw_overlay=False)
                 # Store RULA data globally for JSON API endpoint
                 if rula_data is not None:
                     last_rula_data = rula_data
