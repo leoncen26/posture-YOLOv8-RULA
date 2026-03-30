@@ -346,9 +346,9 @@ def score_neck(neck_flexion_angle):
     Returns:
         Score (1-4)
     """
-    if neck_flexion_angle <= 15:
+    if neck_flexion_angle <= 20:
         return 1
-    elif neck_flexion_angle <= 30:
+    elif neck_flexion_angle <= 35:
         return 2
     elif 31 <= neck_flexion_angle <= 60:
         return 3
@@ -376,49 +376,99 @@ def score_trunk(angle):
 
 def score_legs(keypoints, conf_threshold=0.5):
     """
-    Official RULA scoring for legs.
-    
+    Enhanced RULA scoring for legs with TABLE MANNER analysis.
+
+    Detects improper sitting postures such as:
+    - Raised legs on chair (knees above hips)
+    - Cross-legged sitting
+    - Uneven leg positions
+    - Feet not properly supported
+
     Args:
         keypoints: YOLOv8-Pose keypoints array (x, y, confidence)
         conf_threshold: Minimum confidence threshold for keypoint detection
-    
+
     Returns:
-        Score (1-2)
+        Score (1-2):
+        - 1: Proper sitting posture (feet on floor, legs evenly balanced)
+        - 2: Poor posture (raised legs, uneven position, cross-legged)
     """
-    # Official RULA:
-    # Score 1: Legs and feet are well supported and in an evenly balanced position
-    # Score 2: Legs and feet are not evenly supported
-    
     try:
-        # COCO keypoints: 11=left hip, 12=right hip, 13=left knee, 14=right knee
+        # COCO keypoints: 11=left hip, 12=right hip, 13=left knee, 14=right knee, 15=left ankle, 16=right ankle
         if len(keypoints) < 15:
-            # Not enough keypoints, assume neutral
+            # Not enough keypoints, assume neutral (legs hidden under table)
             return 1
-        
+
         left_hip = keypoints[11]
         right_hip = keypoints[12]
         left_knee = keypoints[13]
         right_knee = keypoints[14]
-        
+
         # Check if hips and knees are visible with sufficient confidence
         hips_visible = (left_hip[2] > conf_threshold and right_hip[2] > conf_threshold)
         knees_visible = (left_knee[2] > conf_threshold and right_knee[2] > conf_threshold)
-        
-        if hips_visible and knees_visible:
-            # Check if legs are evenly positioned (hips level, knees level)
-            hip_height_diff = abs(left_hip[1] - right_hip[1])
-            knee_height_diff = abs(left_knee[1] - right_knee[1])
-            
-            # If both hips and knees are relatively level (within 30 pixels), assume good support
-            if hip_height_diff < 30 and knee_height_diff < 30:
-                return 1
-            else:
-                return 2
-        else:
-            # If legs not visible (occluded by table), assume neutral score
+
+        # If legs not visible (occluded by table), assume proper sitting
+        if not (hips_visible and knees_visible):
             return 1
+
+        # === TABLE MANNER ANALYSIS ===
+
+        # 1. Check if legs are RAISED on chair (knees above hips)
+        # In image coordinates, smaller Y = higher position
+        left_knee_raised = left_knee[1] < left_hip[1] - 20  # 20px threshold
+        right_knee_raised = right_knee[1] < right_hip[1] - 20
+
+        if left_knee_raised or right_knee_raised:
+            # Bad posture: legs raised on chair
+            return 2
+
+        # 2. Check for UNEVEN leg positioning (cross-legged or one leg raised)
+        knee_height_diff = abs(left_knee[1] - right_knee[1])
+        hip_height_diff = abs(left_hip[1] - right_hip[1])
+
+        # If knees are significantly uneven (>40px), likely cross-legged or uneven sitting
+        if knee_height_diff > 40:
+            return 2
+
+        # 3. Check hip-to-knee angle for proper sitting posture
+        # Calculate average knee position relative to hip
+        avg_hip_y = (left_hip[1] + right_hip[1]) / 2
+        avg_knee_y = (left_knee[1] + right_knee[1]) / 2
+
+        # Proper sitting: knees should be below hips (larger Y value)
+        # Allow small margin for natural posture variation
+        if avg_knee_y < avg_hip_y - 10:
+            # Knees are above hips = legs likely raised
+            return 2
+
+        # 4. Check ankle positions if visible (keypoints 15, 16)
+        if len(keypoints) >= 17:
+            left_ankle = keypoints[15]
+            right_ankle = keypoints[16]
+
+            ankles_visible = (left_ankle[2] > conf_threshold and right_ankle[2] > conf_threshold)
+
+            if ankles_visible:
+                # Check if ankles are raised (feet on chair)
+                # Ankles should be below knees for proper sitting
+                left_ankle_raised = left_ankle[1] < left_knee[1] - 20
+                right_ankle_raised = right_ankle[1] < right_knee[1] - 20
+
+                if left_ankle_raised or right_ankle_raised:
+                    # Bad posture: feet on chair
+                    return 2
+
+                # Check for extreme ankle position differences (crossed legs)
+                ankle_height_diff = abs(left_ankle[1] - right_ankle[1])
+                if ankle_height_diff > 60:
+                    return 2
+
+        # All checks passed: proper sitting posture
+        return 1
+
     except (IndexError, TypeError, AttributeError):
-        # If any error occurs, return neutral score
+        # If any error occurs, return neutral score (assume proper sitting)
         return 1
 
 def compute_table_A(upper_arm_score, wrist_score, lower_arm_score):
@@ -689,12 +739,13 @@ def calculate_keypoint_confidence(keypoints, conf_threshold=0.5):
     """
     Calculate average confidence of RULA-relevant keypoints for table manner analysis.
 
-    Only counts the 9 keypoints used for sitting posture RULA:
+    Counts the 11 keypoints used for sitting posture RULA + leg analysis:
     - Nose (0): for neck angle
     - Shoulders (5, 6): for upper arm and trunk
     - Elbows (7, 8): for lower arm angle
     - Wrists (9, 10): for wrist angle
     - Hips (11, 12): for trunk angle
+    - Knees (13, 14): for leg posture detection (raised legs, cross-legged)
 
     Args:
         keypoints: Keypoint array (17, 3) where [:, 2] is confidence
@@ -703,14 +754,14 @@ def calculate_keypoint_confidence(keypoints, conf_threshold=0.5):
     Returns:
         Dictionary with confidence statistics
     """
-    # Define RULA-relevant keypoints for table manner (sitting posture)
-    RULA_KEYPOINT_INDICES = [0, 5, 6, 7, 8, 9, 10, 11, 12]  # 9 keypoints total
+    # Define RULA-relevant keypoints for table manner (sitting posture + legs)
+    RULA_KEYPOINT_INDICES = [0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]  # 11 keypoints total
 
     if keypoints is None or len(keypoints) == 0:
         return {
             "average_confidence": 0.0,
             "detected_keypoints": 0,
-            "total_keypoints": 9
+            "total_keypoints": 11
         }
 
     # Extract confidence values only for RULA-relevant keypoints
@@ -726,7 +777,7 @@ def calculate_keypoint_confidence(keypoints, conf_threshold=0.5):
     return {
         "average_confidence": round(avg_confidence * 100, 1),  # Convert to percentage
         "detected_keypoints": int(detected_count),
-        "total_keypoints": 9
+        "total_keypoints": 11
     }
 
 # ============================================================================
@@ -997,10 +1048,75 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
             cv2.putText(frame, trunk_text,
                        (int(hip_center[0]) + 20, int(hip_center[1]) + 20),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
-            
+
             # Store for RULA
             rula_angles['trunk'] = trunk_angle
-            
+
+        # LEG DETECTION AND VISUALIZATION (for table manner analysis)
+        left_knee_kp = person_kps[13]
+        right_knee_kp = person_kps[14]
+
+        leg_threshold = 0.4  # Lower threshold for legs (often partially occluded)
+
+        # Check leg positions for color-coding
+        left_leg_raised = False
+        right_leg_raised = False
+
+        if left_hp_kp[2] > leg_threshold and left_knee_kp[2] > leg_threshold:
+            # Check if left leg is raised (knee above hip)
+            left_leg_raised = left_knee_kp[1] < left_hp_kp[1] - 20
+
+        if right_hp_kp[2] > leg_threshold and right_knee_kp[2] > leg_threshold:
+            # Check if right leg is raised (knee above hip)
+            right_leg_raised = right_knee_kp[1] < right_hp_kp[1] - 20
+
+        # Draw left leg (hip to knee) with color-coding
+        if left_hp_kp[2] > leg_threshold and left_knee_kp[2] > leg_threshold:
+            # Red for raised leg (bad), Green for proper position (good)
+            leg_color = (0, 0, 255) if left_leg_raised else (0, 255, 0)  # BGR: Red or Green
+            cv2.circle(frame, (int(left_hp_kp[0]), int(left_hp_kp[1])),
+                      keypoint_radius, leg_color, -1)
+            cv2.circle(frame, (int(left_knee_kp[0]), int(left_knee_kp[1])),
+                      keypoint_radius, leg_color, -1)
+            cv2.line(frame, (int(left_hp_kp[0]), int(left_hp_kp[1])),
+                    (int(left_knee_kp[0]), int(left_knee_kp[1])),
+                    leg_color, 3)  # Thicker line for visibility
+
+        # Draw right leg (hip to knee) with color-coding
+        if right_hp_kp[2] > leg_threshold and right_knee_kp[2] > leg_threshold:
+            # Red for raised leg (bad), Green for proper position (good)
+            leg_color = (0, 0, 255) if right_leg_raised else (0, 255, 0)  # BGR: Red or Green
+            cv2.circle(frame, (int(right_hp_kp[0]), int(right_hp_kp[1])),
+                      keypoint_radius, leg_color, -1)
+            cv2.circle(frame, (int(right_knee_kp[0]), int(right_knee_kp[1])),
+                      keypoint_radius, leg_color, -1)
+            cv2.line(frame, (int(right_hp_kp[0]), int(right_hp_kp[1])),
+                    (int(right_knee_kp[0]), int(right_knee_kp[1])),
+                    leg_color, 3)  # Thicker line for visibility
+
+        # Draw ankles if visible (optional - often hidden under table)
+        if len(person_kps) >= 17:
+            left_ankle_kp = person_kps[15]
+            right_ankle_kp = person_kps[16]
+
+            # Draw left knee to ankle with same color coding
+            if left_knee_kp[2] > leg_threshold and left_ankle_kp[2] > leg_threshold:
+                leg_color = (0, 0, 255) if left_leg_raised else (0, 255, 0)
+                cv2.circle(frame, (int(left_ankle_kp[0]), int(left_ankle_kp[1])),
+                          keypoint_radius, leg_color, -1)
+                cv2.line(frame, (int(left_knee_kp[0]), int(left_knee_kp[1])),
+                        (int(left_ankle_kp[0]), int(left_ankle_kp[1])),
+                        leg_color, 3)
+
+            # Draw right knee to ankle with same color coding
+            if right_knee_kp[2] > leg_threshold and right_ankle_kp[2] > leg_threshold:
+                leg_color = (0, 0, 255) if right_leg_raised else (0, 255, 0)
+                cv2.circle(frame, (int(right_ankle_kp[0]), int(right_ankle_kp[1])),
+                          keypoint_radius, leg_color, -1)
+                cv2.line(frame, (int(right_knee_kp[0]), int(right_knee_kp[1])),
+                        (int(right_ankle_kp[0]), int(right_ankle_kp[1])),
+                        leg_color, 3)
+
         # OFFICIAL RULA SCORING AND CLASSIFICATION
         required_angles = ['upper_arm', 'lower_arm', 'wrist']
         has_upper_body = all(angle_key in rula_angles for angle_key in required_angles)
