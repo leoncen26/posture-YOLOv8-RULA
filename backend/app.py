@@ -13,6 +13,7 @@ import math
 from flask import Flask, Response, jsonify
 from flask_cors import CORS
 import time
+import threading
 
 # ============================================================================
 # FLASK APP INITIALIZATION
@@ -25,6 +26,10 @@ CORS(app)  # Enable CORS for frontend communication
 model = None
 cap = None
 previous_keypoints_dict = {}
+camera_lock = threading.Lock()
+camera_state = "inactive"  # inactive | starting | active | error
+camera_error = None
+camera_start_thread = None
 
 # Performance optimization settings
 FRAME_SKIP = 4  # Process every Nth frame (skip intermediate frames) - INCREASED for CPU
@@ -34,6 +39,44 @@ JPEG_QUALITY = 70  # JPEG compression quality (0-100, lower = smaller file size)
 last_inference_result = None  # Cache last inference result for skipped frames
 last_rula_data = None  # Cache latest RULA assessment data for JSON API
 current_fps = 0.0  # Current actual FPS for performance monitoring
+
+
+def _open_camera_async():
+    """Open and configure camera in a background thread to keep /start responsive."""
+    global cap, camera_state, camera_error
+
+    local_cap = None
+    try:
+        # On Windows, CAP_DSHOW usually opens faster; fallback to default backend.
+        local_cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if not local_cap.isOpened():
+            local_cap.release()
+            local_cap = cv2.VideoCapture(0)
+
+        if not local_cap.isOpened():
+            raise RuntimeError("Failed to open camera")
+
+        local_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        local_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        local_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        local_cap.set(cv2.CAP_PROP_FPS, 30)
+
+        with camera_lock:
+            cap = local_cap
+            camera_state = "active"
+            camera_error = None
+
+        print("✓ Webcam started successfully")
+    except Exception as e:
+        if local_cap is not None:
+            local_cap.release()
+
+        with camera_lock:
+            cap = None
+            camera_state = "error"
+            camera_error = str(e)
+
+        print(f"✗ Error starting camera: {e}")
 
 # ============================================================================
 # POSE MODEL LOADING
@@ -1254,7 +1297,8 @@ def generate_frames():
     
     while True:
         if cap is None or not cap.isOpened():
-            break
+            time.sleep(0.05)
+            continue
             
         success, frame = cap.read()
         
@@ -1368,10 +1412,12 @@ def video():
 @app.route('/status')
 def status():
     """Check system status."""
-    global cap, model
+    global cap, model, camera_state, camera_error
     return jsonify({
         "model_loaded": model is not None,
-        "camera_active": cap is not None and cap.isOpened()
+        "camera_active": cap is not None and cap.isOpened(),
+        "camera_state": camera_state,
+        "camera_error": camera_error
     })
 
 @app.route('/rula_data')
@@ -1388,57 +1434,60 @@ def rula_data():
 @app.route('/start', methods=['POST'])
 def start_camera():
     """Start the webcam."""
-    global cap
+    global model, camera_state, camera_error, camera_start_thread
 
-    if cap is not None and cap.isOpened():
-        return jsonify({
-            'status': 'already_active',
-            'message': 'Camera is already running'
-        })
-
-    try:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            cap = None
-            return jsonify({
-                'status': 'error',
-                'message': 'Failed to open camera'
-            }), 500
-
-        # Configure camera for better performance
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-
-        print("✓ Webcam started successfully")
-        return jsonify({
-            'status': 'success',
-            'message': 'Camera started successfully'
-        })
-    except Exception as e:
-        cap = None
-        print(f"✗ Error starting camera: {e}")
+    if model is None:
         return jsonify({
             'status': 'error',
-            'message': str(e)
-        }), 500
+            'message': 'Model is not loaded yet'
+        }), 503
+
+    with camera_lock:
+        if camera_state == "active" and cap is not None and cap.isOpened():
+            return jsonify({
+                'status': 'already_active',
+                'message': 'Camera is already running'
+            })
+
+        if camera_state == "starting":
+            return jsonify({
+                'status': 'starting',
+                'message': 'Camera is starting'
+            }), 202
+
+        camera_state = "starting"
+        camera_error = None
+        camera_start_thread = threading.Thread(target=_open_camera_async, daemon=True)
+        camera_start_thread.start()
+
+    return jsonify({
+        'status': 'starting',
+        'message': 'Camera start initiated'
+    }), 202
 
 @app.route('/stop', methods=['POST'])
 def stop_camera():
     """Stop the webcam and release the camera resource."""
-    global cap, last_rula_data
+    global cap, last_rula_data, camera_state, camera_error
 
-    if cap is None:
-        return jsonify({
-            'status': 'already_inactive',
-            'message': 'Camera is not running'
-        })
+    local_cap = None
+    with camera_lock:
+        if cap is None and camera_state in ("inactive", "error"):
+            camera_state = "inactive"
+            camera_error = None
+            return jsonify({
+                'status': 'already_inactive',
+                'message': 'Camera is not running'
+            })
+
+        local_cap = cap
+        cap = None
+        camera_state = "inactive"
+        camera_error = None
 
     try:
-        if cap is not None:
-            cap.release()  # This turns off the camera light
-            cap = None
+        if local_cap is not None:
+            local_cap.release()  # This turns off the camera light
 
         # Clear RULA data when camera stops
         last_rula_data = None
