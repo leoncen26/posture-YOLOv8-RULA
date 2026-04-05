@@ -42,7 +42,7 @@ current_fps = 0.0  # Current actual FPS for performance monitoring
 
 # Stability settings for less jittery posture estimation
 ANGLE_EMA_ALPHA = 0.25  # Lower = more stable, higher = more responsive
-LEGS_RAISED_CONFIRM_FRAMES = 3
+LEGS_RAISED_CONFIRM_FRAMES = 4
 LEGS_NORMAL_CONFIRM_FRAMES = 5
 
 # Temporal state for smoothing and hysteresis
@@ -465,11 +465,11 @@ def score_legs(keypoints, conf_threshold=0.35):
     """
     Enhanced RULA scoring for legs with TABLE MANNER analysis.
 
-    Detects improper sitting postures such as:
-    - Raised legs on chair (knees above hips)
-    - Cross-legged sitting
-    - Uneven leg positions
-    - Feet not properly supported
+    Detects improper sitting postures such as raised legs on chair.
+
+    IMPORTANT POLICY:
+    - Score 2 only when there is clear raised-leg evidence.
+    - Leg visibility/asymmetry alone must NOT trigger score 2.
 
     Args:
         keypoints: YOLOv8-Pose keypoints array (x, y, confidence)
@@ -515,17 +515,11 @@ def score_legs(keypoints, conf_threshold=0.35):
 
                 # Rule A: if either visible leg is clearly raised, mark non-neutral.
                 if hip_vis_left and knee_vis_left:
-                    if left_knee[1] < left_hip[1] - (0.16 * scale):
+                    if left_knee[1] < left_hip[1] - (0.22 * scale):
                         raw_score = 2
 
                 if hip_vis_right and knee_vis_right:
-                    if right_knee[1] < right_hip[1] - (0.16 * scale):
-                        raw_score = 2
-
-                # Rule B: if both knees visible, strong asymmetry indicates one raised/crossed.
-                if knee_vis_left and knee_vis_right:
-                    knee_height_diff = abs(left_knee[1] - right_knee[1])
-                    if knee_height_diff > (0.35 * scale):
+                    if right_knee[1] < right_hip[1] - (0.22 * scale):
                         raw_score = 2
 
                 # Rule C: ankle above knee on either visible side is non-neutral.
@@ -536,11 +530,11 @@ def score_legs(keypoints, conf_threshold=0.35):
                     ankle_vis_right = right_ankle[2] > conf_threshold
 
                     if knee_vis_left and ankle_vis_left:
-                        if left_ankle[1] < left_knee[1] - (0.12 * scale):
+                        if left_ankle[1] < left_knee[1] - (0.18 * scale):
                             raw_score = 2
 
                     if knee_vis_right and ankle_vis_right:
-                        if right_ankle[1] < right_knee[1] - (0.12 * scale):
+                        if right_ankle[1] < right_knee[1] - (0.18 * scale):
                             raw_score = 2
 
     except (IndexError, TypeError, AttributeError):
@@ -1152,22 +1146,12 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
 
         leg_threshold = 0.35  # Side-view tolerant threshold for partially occluded far leg
 
-        # Check leg positions for color-coding
-        left_leg_raised = False
-        right_leg_raised = False
-
-        if left_hp_kp[2] > leg_threshold and left_knee_kp[2] > leg_threshold:
-            # Check if left leg is raised (knee above hip)
-            left_leg_raised = left_knee_kp[1] < left_hp_kp[1] - 20
-
-        if right_hp_kp[2] > leg_threshold and right_knee_kp[2] > leg_threshold:
-            # Check if right leg is raised (knee above hip)
-            right_leg_raised = right_knee_kp[1] < right_hp_kp[1] - 20
+        # Color follows stable legs score only to avoid false red flashes.
+        leg_color_stable = (0, 0, 255) if stable_legs_score == 2 else (0, 255, 0)
 
         # Draw left leg (hip to knee) with color-coding
         if left_hp_kp[2] > leg_threshold and left_knee_kp[2] > leg_threshold:
-            # Use stable leg state for color to avoid rapid green/red flicker.
-            leg_color = (0, 0, 255) if (stable_legs_score == 2 or left_leg_raised) else (0, 255, 0)
+            leg_color = leg_color_stable
             cv2.circle(frame, (int(left_hp_kp[0]), int(left_hp_kp[1])),
                       keypoint_radius, leg_color, -1)
             cv2.circle(frame, (int(left_knee_kp[0]), int(left_knee_kp[1])),
@@ -1178,8 +1162,7 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
 
         # Draw right leg (hip to knee) with color-coding
         if right_hp_kp[2] > leg_threshold and right_knee_kp[2] > leg_threshold:
-            # Use stable leg state for color to avoid rapid green/red flicker.
-            leg_color = (0, 0, 255) if (stable_legs_score == 2 or right_leg_raised) else (0, 255, 0)
+            leg_color = leg_color_stable
             cv2.circle(frame, (int(right_hp_kp[0]), int(right_hp_kp[1])),
                       keypoint_radius, leg_color, -1)
             cv2.circle(frame, (int(right_knee_kp[0]), int(right_knee_kp[1])),
@@ -1195,7 +1178,7 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
 
             # Draw left knee to ankle with same color coding
             if left_knee_kp[2] > leg_threshold and left_ankle_kp[2] > leg_threshold:
-                leg_color = (0, 0, 255) if (stable_legs_score == 2 or left_leg_raised) else (0, 255, 0)
+                leg_color = leg_color_stable
                 cv2.circle(frame, (int(left_ankle_kp[0]), int(left_ankle_kp[1])),
                           keypoint_radius, leg_color, -1)
                 cv2.line(frame, (int(left_knee_kp[0]), int(left_knee_kp[1])),
@@ -1204,7 +1187,7 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
 
             # Draw right knee to ankle with same color coding
             if right_knee_kp[2] > leg_threshold and right_ankle_kp[2] > leg_threshold:
-                leg_color = (0, 0, 255) if (stable_legs_score == 2 or right_leg_raised) else (0, 255, 0)
+                leg_color = leg_color_stable
                 cv2.circle(frame, (int(right_ankle_kp[0]), int(right_ankle_kp[1])),
                           keypoint_radius, leg_color, -1)
                 cv2.line(frame, (int(right_knee_kp[0]), int(right_knee_kp[1])),
