@@ -6,7 +6,8 @@
  * The UI is presentation-only; scoring logic remains in backend.
  */
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { getVoiceFeedbackEnglish, getVoiceFeedbackIndonesian } from '../utils/voiceFeedback';
 
 const SCORE_LIMITS = {
   upper_arm_score: 6,
@@ -45,6 +46,7 @@ const getMetricColor = (score, maxScore) => {
   if (ratio <= 0.66) return '#d97706';
   return '#dc2626';
 };
+
 
 const getFeedback = (score) => {
  if (score >= 1 && score <= 2) {
@@ -107,6 +109,59 @@ const getFeedback = (score) => {
 };
 
 const RulaDisplay = ({ rulaData }) => {
+  const [prevSpokenScore, setPrevSpokenScore] = useState(null);
+  const [lastSpokenTime, setLastSpokenTime] = useState(0);
+  const [isVoiceEnabled, setIsVoiceEnabled] = useState(true);
+  const voiceLanguage = 'en'; // Change to 'id' to use Indonesian voice feedback.
+
+  // Cleanup: stop any queued/ongoing utterances when component unmounts.
+  useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isVoiceEnabled && typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+  }, [isVoiceEnabled]);
+
+  useEffect(() => {
+    if (!rulaData?.detected || !Number.isFinite(rulaData?.final_score)) return;
+    if (!isVoiceEnabled) return;
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+
+    const score = rulaData.final_score;
+    const voicePayload =
+      voiceLanguage === 'id'
+        ? getVoiceFeedbackIndonesian(score, prevSpokenScore, lastSpokenTime)
+        : getVoiceFeedbackEnglish(score, prevSpokenScore, lastSpokenTime);
+
+    if (!voicePayload) return;
+
+    const timeoutId = window.setTimeout(() => {
+      const utterance = new SpeechSynthesisUtterance(voicePayload.message);
+      utterance.lang = voiceLanguage === 'id' ? 'id-ID' : 'en-US';
+      utterance.rate = 0.95;
+      utterance.pitch = 1.0;
+      utterance.volume = 0.9;
+
+      // Cancel any pending utterance so feedback stays current but not spammy.
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+
+      setPrevSpokenScore(score);
+      setLastSpokenTime(Date.now());
+    }, voicePayload.delay ?? 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [rulaData?.detected, rulaData?.final_score, prevSpokenScore, lastSpokenTime, voiceLanguage, isVoiceEnabled]);
+
   if (!rulaData || !rulaData.detected) {
     return (
       <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
@@ -131,7 +186,20 @@ const RulaDisplay = ({ rulaData }) => {
     <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
       <div className="px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-2">
         <h3 className="text-xl font-semibold text-gray-900">RULA Assessment</h3>
-        <span className="text-[11px] font-semibold px-2 py-1 rounded bg-blue-100 text-blue-700">REAL-TIME</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsVoiceEnabled((prev) => !prev)}
+            className={`text-[11px] font-semibold px-2 py-1 rounded border ${
+              isVoiceEnabled
+                ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+                : 'bg-gray-100 text-gray-600 border-gray-200'
+            }`}
+          >
+            Voice: {isVoiceEnabled ? 'On' : 'Off'}
+          </button>
+          <span className="text-[11px] font-semibold px-2 py-1 rounded bg-blue-100 text-blue-700">REAL-TIME</span>
+        </div>
       </div>
 
       <div className="p-4 space-y-4">

@@ -26,7 +26,7 @@ const Header = () => {
         </div>
         <div>
           <h1 className="text-[30px] font-bold text-gray-900 leading-tight">
-            Posture Detection & RULA Assessment
+            Table Manner Posture Detection & RULA Assessment
           </h1>
         </div>
       </div>
