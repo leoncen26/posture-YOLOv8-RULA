@@ -34,6 +34,7 @@ import ControlButton from "./components/ControlButton";
 import HelpButton from "./components/HelpButton";
 import HelpModal from "./components/HelpModal";
 import RulaDisplay from "./components/RulaDisplay";
+import StatusBar from "./components/StatusBar";
 
 // Custom Hook Imports
 import useWebcam from "./hooks/useWebcam";
@@ -45,7 +46,6 @@ function App() {
 
   // RULA data fetching hook
   const rulaData = useRulaData(isActive);
-  const latencyMs = rulaData?.fps ? Math.round(1000 / rulaData.fps) : null;
 
   // Modal state management
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
@@ -129,21 +129,7 @@ function App() {
         </div>
 
         {/* Bottom Status Bar */}
-        <div className="mt-auto bg-white border border-gray-200 rounded-xl px-4 py-3 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-gray-600">
-            <div className="flex items-center gap-4">
-              <div className="inline-flex items-center gap-2">
-                <span className={`w-2.5 h-2.5 rounded-full ${isActive ? "bg-green-500" : "bg-gray-300"}`} />
-                <span>{isActive ? "CONNECTED TO BACKEND" : "BACKEND IDLE"}</span>
-              </div>
-              <div>FPS: {rulaData?.fps ?? "--"}</div>
-              <div>LATENCY: {latencyMs ?? "--"}ms</div>
-            </div>
-            <div className="font-medium tracking-wide text-gray-500">
-              {isActive ? "REAL-TIME ANALYSIS ACTIVE" : "READY"}
-            </div>
-          </div>
-        </div>
+        <StatusBar isActive={isActive} rulaData={rulaData} />
       </div>
     </div>
   );

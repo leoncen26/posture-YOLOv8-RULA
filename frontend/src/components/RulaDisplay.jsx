@@ -1,9 +1,6 @@
 /**
  * RulaDisplay Component
- *
- * Purpose:
- * Shows all backend RULA data in a compact right-side panel.
- * The UI is presentation-only; scoring logic remains in backend.
+ * Purpose: Shows all backend RULA data in a compact right-side panel.
  */
 
 import React, { useEffect, useState } from 'react';

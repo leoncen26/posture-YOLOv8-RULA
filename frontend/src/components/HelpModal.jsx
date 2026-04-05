@@ -1,17 +1,3 @@
-/**
- * HelpModal Component
- * 
- * Purpose:
- * Displays a modal with information about how to use the posture analysis system.
- * Provides instructions and guidelines for proper usage.
- * 
- * Props:
- * @param {boolean} isOpen - Whether the modal is currently open
- * @param {Function} onClose - Callback function to close the modal
- * 
- * @returns {JSX.Element|null} The rendered modal or null if closed
- */
-
 const HelpModal = ({ isOpen, onClose }) => {
   // Don't render if modal is closed
   if (!isOpen) return null;

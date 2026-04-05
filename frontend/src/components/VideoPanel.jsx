@@ -5,12 +5,6 @@
  * Displays the video stream from Flask backend with pose analysis overlay.
  * The backend processes the video and adds all pose detection visualizations,
  * so this component simply displays the processed stream.
- * 
- * Props:
- * @param {string|null} videoUrl - The backend video stream URL
- * @param {boolean} isActive - Whether the video stream is active
- * 
- * @returns {JSX.Element} The rendered video panel
  */
 
 const VideoPanel = ({ videoUrl, isActive }) => {

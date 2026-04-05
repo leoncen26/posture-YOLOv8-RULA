@@ -1,17 +1,3 @@
-/**
- * HelpButton Component
- * 
- * Purpose:
- * A floating help button that provides information about the system.
- * Positioned in the top-right corner of the application.
- * Opens a modal or tooltip with usage instructions when clicked.
- * 
- * Props:
- * @param {Function} onClick - Callback function to handle help button clicks
- * 
- * @returns {JSX.Element} The rendered help button
- */
-
 const HelpButton = ({ onClick }) => {
   return (
     <button

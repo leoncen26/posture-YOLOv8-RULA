@@ -4,12 +4,6 @@
  * Purpose:
  * Container component that displays the video stream from Flask backend.
  * The backend processes one camera feed with complete RULA pose analysis.
- * 
- * Props:
- * @param {string|null} videoUrl - The backend video stream URL
- * @param {boolean} isActive - Whether the video stream is active
- * 
- * @returns {JSX.Element} The rendered video display container
  */
 
 import VideoPanel from './VideoPanel';

@@ -1021,9 +1021,7 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
                     (180, 180, 180), 1)
             
             # Display upper arm angle
-            support_text = " [SUP]" if is_arm_supported else ""
-            abducted_text = " [ABD]" if is_abducted else ""
-            upper_arm_text = f"Upper Arm: {upper_arm_angle:.1f}°{support_text}{abducted_text}"
+            upper_arm_text = f"Upper Arm: {upper_arm_angle:.1f}°"
             cv2.putText(frame, upper_arm_text,
                        (int(right_sh[0]) + 15, int(right_sh[1]) - 5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 128, 0), 2)
@@ -1054,7 +1052,7 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
                         (int(left_el[0]), int(left_el[1])),
                         (int(left_wr_kp[0]), int(left_wr_kp[1])),
                         (0, 200, 0), 2)
-                cv2.putText(frame, f"L Wrist*: {left_wrist_angle:.1f}deg",
+                cv2.putText(frame, f"Wrist: {left_wrist_angle:.1f}°",
                            (int(left_wr_kp[0]) - 120, int(left_wr_kp[1]) + 20),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 220), 1)
 
@@ -1072,21 +1070,18 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
                         (int(right_el_kp[0]), int(right_el_kp[1])),
                         (int(right_wr_kp[0]), int(right_wr_kp[1])),
                         (0, 255, 0), 2)
-                cv2.putText(frame, f"R Wrist*: {right_wrist_angle:.1f}deg",
+                cv2.putText(frame, f"Wrist: {right_wrist_angle:.1f}°",
                            (int(right_wr_kp[0]) + 10, int(right_wr_kp[1]) + 20),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 220), 1)
 
         if wrist_candidates:
             # Prefer the side with better confidence; use larger angle as tie-breaker.
-            selected_wrist_angle, _, selected_side, selected_wr = max(
+            selected_wrist_angle, _, _, _ = max(
                 wrist_candidates,
                 key=lambda x: (x[1], x[0])
             )
 
             rula_angles['wrist'] = selected_wrist_angle
-            cv2.putText(frame, f"Wrist side used: {selected_side}",
-                       (int(selected_wr[0]) + 10, int(selected_wr[1]) + 40),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         
         # NECK AND TRUNK ANGLES
         if (nose_kp[2] > conf_threshold and shoulder_center is not None and hip_center is not None):
