@@ -40,6 +40,50 @@ last_inference_result = None  # Cache last inference result for skipped frames
 last_rula_data = None  # Cache latest RULA assessment data for JSON API
 current_fps = 0.0  # Current actual FPS for performance monitoring
 
+# Stability settings for less jittery posture estimation
+ANGLE_EMA_ALPHA = 0.25  # Lower = more stable, higher = more responsive
+LEGS_RAISED_CONFIRM_FRAMES = 3
+LEGS_NORMAL_CONFIRM_FRAMES = 5
+
+# Temporal state for smoothing and hysteresis
+posture_stability_state = {
+    "upper_arm": None,
+    "lower_arm": None,
+    "wrist": None,
+    "neck": None,
+    "trunk": None,
+    "legs_score": 1,
+    "legs_raised_counter": 0,
+    "legs_normal_counter": 0,
+}
+
+
+def reset_stability_state():
+    """Reset temporal smoothing/debouncing state when camera session starts/stops."""
+    global posture_stability_state
+    posture_stability_state = {
+        "upper_arm": None,
+        "lower_arm": None,
+        "wrist": None,
+        "neck": None,
+        "trunk": None,
+        "legs_score": 1,
+        "legs_raised_counter": 0,
+        "legs_normal_counter": 0,
+    }
+
+
+def smooth_angle_value(key, current_value, alpha=ANGLE_EMA_ALPHA):
+    """EMA smoothing for angle values to reduce rapid frame-to-frame oscillation."""
+    global posture_stability_state
+    previous_value = posture_stability_state.get(key)
+    if previous_value is None:
+        smoothed = float(current_value)
+    else:
+        smoothed = (alpha * float(current_value)) + ((1.0 - alpha) * float(previous_value))
+    posture_stability_state[key] = smoothed
+    return smoothed
+
 
 def _open_camera_async():
     """Open and configure camera in a background thread to keep /start responsive."""
@@ -417,7 +461,7 @@ def score_trunk(angle):
     else:
         return 4
 
-def score_legs(keypoints, conf_threshold=0.5):
+def score_legs(keypoints, conf_threshold=0.35):
     """
     Enhanced RULA scoring for legs with TABLE MANNER analysis.
 
@@ -436,83 +480,89 @@ def score_legs(keypoints, conf_threshold=0.5):
         - 1: Proper sitting posture (feet on floor, legs evenly balanced)
         - 2: Poor posture (raised legs, uneven position, cross-legged)
     """
+    global posture_stability_state
+
+    raw_score = 1
+
     try:
         # COCO keypoints: 11=left hip, 12=right hip, 13=left knee, 14=right knee, 15=left ankle, 16=right ankle
         if len(keypoints) < 15:
             # Not enough keypoints, assume neutral (legs hidden under table)
-            return 1
+            raw_score = 1
+        else:
+            left_hip = keypoints[11]
+            right_hip = keypoints[12]
+            left_knee = keypoints[13]
+            right_knee = keypoints[14]
 
-        left_hip = keypoints[11]
-        right_hip = keypoints[12]
-        left_knee = keypoints[13]
-        right_knee = keypoints[14]
+            # In side-view, one leg can be partially occluded. Evaluate each side independently.
+            hip_vis_left = left_hip[2] > conf_threshold
+            hip_vis_right = right_hip[2] > conf_threshold
+            knee_vis_left = left_knee[2] > conf_threshold
+            knee_vis_right = right_knee[2] > conf_threshold
 
-        # Check if hips and knees are visible with sufficient confidence
-        hips_visible = (left_hip[2] > conf_threshold and right_hip[2] > conf_threshold)
-        knees_visible = (left_knee[2] > conf_threshold and right_knee[2] > conf_threshold)
+            if not ((hip_vis_left and knee_vis_left) or (hip_vis_right and knee_vis_right)):
+                raw_score = 1
+            else:
+                raw_score = 1
 
-        # If legs not visible (occluded by table), assume proper sitting
-        if not (hips_visible and knees_visible):
-            return 1
+                # Use body scale to make thresholds less sensitive to camera distance.
+                if hip_vis_left and hip_vis_right:
+                    hip_width = abs(left_hip[0] - right_hip[0])
+                    scale = max(hip_width, 40.0)
+                else:
+                    scale = 55.0
 
-        # === TABLE MANNER ANALYSIS ===
+                # Rule A: if either visible leg is clearly raised, mark non-neutral.
+                if hip_vis_left and knee_vis_left:
+                    if left_knee[1] < left_hip[1] - (0.16 * scale):
+                        raw_score = 2
 
-        # 1. Check if legs are RAISED on chair (knees above hips)
-        # In image coordinates, smaller Y = higher position
-        left_knee_raised = left_knee[1] < left_hip[1] - 20  # 20px threshold
-        right_knee_raised = right_knee[1] < right_hip[1] - 20
+                if hip_vis_right and knee_vis_right:
+                    if right_knee[1] < right_hip[1] - (0.16 * scale):
+                        raw_score = 2
 
-        if left_knee_raised or right_knee_raised:
-            # Bad posture: legs raised on chair
-            return 2
+                # Rule B: if both knees visible, strong asymmetry indicates one raised/crossed.
+                if knee_vis_left and knee_vis_right:
+                    knee_height_diff = abs(left_knee[1] - right_knee[1])
+                    if knee_height_diff > (0.35 * scale):
+                        raw_score = 2
 
-        # 2. Check for UNEVEN leg positioning (cross-legged or one leg raised)
-        knee_height_diff = abs(left_knee[1] - right_knee[1])
-        hip_height_diff = abs(left_hip[1] - right_hip[1])
+                # Rule C: ankle above knee on either visible side is non-neutral.
+                if len(keypoints) >= 17:
+                    left_ankle = keypoints[15]
+                    right_ankle = keypoints[16]
+                    ankle_vis_left = left_ankle[2] > conf_threshold
+                    ankle_vis_right = right_ankle[2] > conf_threshold
 
-        # If knees are significantly uneven (>40px), likely cross-legged or uneven sitting
-        if knee_height_diff > 40:
-            return 2
+                    if knee_vis_left and ankle_vis_left:
+                        if left_ankle[1] < left_knee[1] - (0.12 * scale):
+                            raw_score = 2
 
-        # 3. Check hip-to-knee angle for proper sitting posture
-        # Calculate average knee position relative to hip
-        avg_hip_y = (left_hip[1] + right_hip[1]) / 2
-        avg_knee_y = (left_knee[1] + right_knee[1]) / 2
-
-        # Proper sitting: knees should be below hips (larger Y value)
-        # Allow small margin for natural posture variation
-        if avg_knee_y < avg_hip_y - 10:
-            # Knees are above hips = legs likely raised
-            return 2
-
-        # 4. Check ankle positions if visible (keypoints 15, 16)
-        if len(keypoints) >= 17:
-            left_ankle = keypoints[15]
-            right_ankle = keypoints[16]
-
-            ankles_visible = (left_ankle[2] > conf_threshold and right_ankle[2] > conf_threshold)
-
-            if ankles_visible:
-                # Check if ankles are raised (feet on chair)
-                # Ankles should be below knees for proper sitting
-                left_ankle_raised = left_ankle[1] < left_knee[1] - 20
-                right_ankle_raised = right_ankle[1] < right_knee[1] - 20
-
-                if left_ankle_raised or right_ankle_raised:
-                    # Bad posture: feet on chair
-                    return 2
-
-                # Check for extreme ankle position differences (crossed legs)
-                ankle_height_diff = abs(left_ankle[1] - right_ankle[1])
-                if ankle_height_diff > 60:
-                    return 2
-
-        # All checks passed: proper sitting posture
-        return 1
+                    if knee_vis_right and ankle_vis_right:
+                        if right_ankle[1] < right_knee[1] - (0.12 * scale):
+                            raw_score = 2
 
     except (IndexError, TypeError, AttributeError):
         # If any error occurs, return neutral score (assume proper sitting)
-        return 1
+        raw_score = 1
+
+    # Debounce leg score changes to prevent wild flickering on noisy keypoints.
+    current_stable = posture_stability_state.get("legs_score", 1)
+
+    if raw_score == 2:
+        posture_stability_state["legs_raised_counter"] = posture_stability_state.get("legs_raised_counter", 0) + 1
+        posture_stability_state["legs_normal_counter"] = 0
+        if posture_stability_state["legs_raised_counter"] >= LEGS_RAISED_CONFIRM_FRAMES:
+            current_stable = 2
+    else:
+        posture_stability_state["legs_normal_counter"] = posture_stability_state.get("legs_normal_counter", 0) + 1
+        posture_stability_state["legs_raised_counter"] = 0
+        if posture_stability_state["legs_normal_counter"] >= LEGS_NORMAL_CONFIRM_FRAMES:
+            current_stable = 1
+
+    posture_stability_state["legs_score"] = current_stable
+    return current_stable
 
 def compute_table_A(upper_arm_score, wrist_score, lower_arm_score):
     """
@@ -633,7 +683,7 @@ def classify_rula(final_score):
 
 def calculate_official_rula(upper_arm_angle, lower_arm_angle, wrist_angle, 
                             neck_angle, trunk_angle, keypoints, person_detected=True, 
-                            is_arm_supported=False, is_abducted=False):
+                            is_arm_supported=False, is_abducted=False, legs_score_override=None):
     """
     Calculate OFFICIAL RULA score using proper tables and structure.
     
@@ -658,7 +708,7 @@ def calculate_official_rula(upper_arm_angle, lower_arm_angle, wrist_angle,
     wrist_score = score_wrist(wrist_angle)
     neck_score = score_neck(neck_angle)
     trunk_score = score_trunk(trunk_angle)
-    legs_score = score_legs(keypoints)
+    legs_score = legs_score_override if legs_score_override is not None else score_legs(keypoints)
     
     # Step 2: Compute Score A (Group A: Upper Limb)
     score_a = compute_table_A(upper_arm_score, wrist_score, lower_arm_score)
@@ -1098,8 +1148,9 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
         # LEG DETECTION AND VISUALIZATION (for table manner analysis)
         left_knee_kp = person_kps[13]
         right_knee_kp = person_kps[14]
+        stable_legs_score = score_legs(person_kps, conf_threshold=0.35)
 
-        leg_threshold = 0.4  # Lower threshold for legs (often partially occluded)
+        leg_threshold = 0.35  # Side-view tolerant threshold for partially occluded far leg
 
         # Check leg positions for color-coding
         left_leg_raised = False
@@ -1115,8 +1166,8 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
 
         # Draw left leg (hip to knee) with color-coding
         if left_hp_kp[2] > leg_threshold and left_knee_kp[2] > leg_threshold:
-            # Red for raised leg (bad), Green for proper position (good)
-            leg_color = (0, 0, 255) if left_leg_raised else (0, 255, 0)  # BGR: Red or Green
+            # Use stable leg state for color to avoid rapid green/red flicker.
+            leg_color = (0, 0, 255) if (stable_legs_score == 2 or left_leg_raised) else (0, 255, 0)
             cv2.circle(frame, (int(left_hp_kp[0]), int(left_hp_kp[1])),
                       keypoint_radius, leg_color, -1)
             cv2.circle(frame, (int(left_knee_kp[0]), int(left_knee_kp[1])),
@@ -1127,8 +1178,8 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
 
         # Draw right leg (hip to knee) with color-coding
         if right_hp_kp[2] > leg_threshold and right_knee_kp[2] > leg_threshold:
-            # Red for raised leg (bad), Green for proper position (good)
-            leg_color = (0, 0, 255) if right_leg_raised else (0, 255, 0)  # BGR: Red or Green
+            # Use stable leg state for color to avoid rapid green/red flicker.
+            leg_color = (0, 0, 255) if (stable_legs_score == 2 or right_leg_raised) else (0, 255, 0)
             cv2.circle(frame, (int(right_hp_kp[0]), int(right_hp_kp[1])),
                       keypoint_radius, leg_color, -1)
             cv2.circle(frame, (int(right_knee_kp[0]), int(right_knee_kp[1])),
@@ -1144,7 +1195,7 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
 
             # Draw left knee to ankle with same color coding
             if left_knee_kp[2] > leg_threshold and left_ankle_kp[2] > leg_threshold:
-                leg_color = (0, 0, 255) if left_leg_raised else (0, 255, 0)
+                leg_color = (0, 0, 255) if (stable_legs_score == 2 or left_leg_raised) else (0, 255, 0)
                 cv2.circle(frame, (int(left_ankle_kp[0]), int(left_ankle_kp[1])),
                           keypoint_radius, leg_color, -1)
                 cv2.line(frame, (int(left_knee_kp[0]), int(left_knee_kp[1])),
@@ -1153,7 +1204,7 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
 
             # Draw right knee to ankle with same color coding
             if right_knee_kp[2] > leg_threshold and right_ankle_kp[2] > leg_threshold:
-                leg_color = (0, 0, 255) if right_leg_raised else (0, 255, 0)
+                leg_color = (0, 0, 255) if (stable_legs_score == 2 or right_leg_raised) else (0, 255, 0)
                 cv2.circle(frame, (int(right_ankle_kp[0]), int(right_ankle_kp[1])),
                           keypoint_radius, leg_color, -1)
                 cv2.line(frame, (int(right_knee_kp[0]), int(right_knee_kp[1])),
@@ -1166,9 +1217,18 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
         
         # Display RULA if we have upper body
         if has_upper_body:
+            # Stabilize angle inputs before discrete RULA score mapping.
+            rula_angles['upper_arm'] = smooth_angle_value('upper_arm', rula_angles['upper_arm'])
+            rula_angles['lower_arm'] = smooth_angle_value('lower_arm', rula_angles['lower_arm'])
+            rula_angles['wrist'] = smooth_angle_value('wrist', rula_angles['wrist'])
+
             # Use default neck and trunk values if not available
             neck_angle_val = rula_angles.get('neck', 5)
             trunk_angle_val = rula_angles.get('trunk', 0)
+
+            # Smooth neck/trunk too to reduce jumping when upper body is mostly still.
+            neck_angle_val = smooth_angle_value('neck', neck_angle_val)
+            trunk_angle_val = smooth_angle_value('trunk', trunk_angle_val)
             
             # Get arm support and abduction status
             arm_supported = rula_angles.get('is_arm_supported', False)
@@ -1184,7 +1244,8 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
                 person_kps,
                 person_detected=True,
                 is_arm_supported=arm_supported,
-                is_abducted=arm_abducted
+                is_abducted=arm_abducted,
+                legs_score_override=stable_legs_score
             )
             
             # Store RULA result for JSON API
@@ -1335,7 +1396,7 @@ def generate_frames():
                     current_kp = results[0].keypoints.data.cpu().numpy()
                     if len(previous_keypoints_dict) > 0 and 'last' in previous_keypoints_dict:
                         prev_kp = previous_keypoints_dict['last']
-                        smoothed_keypoints = 0.7 * current_kp + 0.3 * prev_kp
+                        smoothed_keypoints = 0.55 * current_kp + 0.45 * prev_kp
                     else:
                         smoothed_keypoints = current_kp
                     previous_keypoints_dict['last'] = current_kp
@@ -1434,7 +1495,7 @@ def rula_data():
 @app.route('/start', methods=['POST'])
 def start_camera():
     """Start the webcam."""
-    global model, camera_state, camera_error, camera_start_thread
+    global model, camera_state, camera_error, camera_start_thread, previous_keypoints_dict, last_inference_result
 
     if model is None:
         return jsonify({
@@ -1457,6 +1518,9 @@ def start_camera():
 
         camera_state = "starting"
         camera_error = None
+        previous_keypoints_dict = {}
+        last_inference_result = None
+        reset_stability_state()
         camera_start_thread = threading.Thread(target=_open_camera_async, daemon=True)
         camera_start_thread.start()
 
@@ -1468,7 +1532,7 @@ def start_camera():
 @app.route('/stop', methods=['POST'])
 def stop_camera():
     """Stop the webcam and release the camera resource."""
-    global cap, last_rula_data, camera_state, camera_error
+    global cap, last_rula_data, camera_state, camera_error, previous_keypoints_dict, last_inference_result
 
     local_cap = None
     with camera_lock:
@@ -1491,6 +1555,9 @@ def stop_camera():
 
         # Clear RULA data when camera stops
         last_rula_data = None
+        previous_keypoints_dict = {}
+        last_inference_result = None
+        reset_stability_state()
 
         print("✓ Webcam stopped and released")
         return jsonify({
