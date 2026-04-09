@@ -60,7 +60,7 @@ const HelpModal = ({ isOpen, onClose }) => {
               </h3>
               <ol className="list-decimal list-inside space-y-2 text-gray-600">
                 <li>Click the "Aktifkan Webcam" button to start your camera</li>
-                <li>Position yourself so you're visible in both front and side views</li>
+                <li>Position yourself so you're visible from side views</li>
                 <li>Sit naturally at your desk or table</li>
                 <li>The system will analyze your posture in real-time</li>
                 <li>Follow the recommendations to improve your posture</li>

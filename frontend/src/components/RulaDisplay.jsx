@@ -108,7 +108,7 @@ const getFeedback = (score) => {
 const RulaDisplay = ({ rulaData }) => {
   const [prevSpokenScore, setPrevSpokenScore] = useState(null);
   const [lastSpokenTime, setLastSpokenTime] = useState(0);
-  const [isVoiceEnabled, setIsVoiceEnabled] = useState(true);
+  const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
   const voiceLanguage = 'en'; // Change to 'id' to use Indonesian voice feedback.
 
   // Cleanup: stop any queued/ongoing utterances when component unmounts.
