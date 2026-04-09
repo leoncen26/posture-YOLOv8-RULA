@@ -20,6 +20,34 @@
 import { useState, useCallback } from 'react';
 import { API_ENDPOINTS } from '../config/api';
 
+const STARTUP_TIMEOUT_MS = 15000;
+const POLL_INTERVAL_MS = 250;
+
+const waitForCameraActive = async () => {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < STARTUP_TIMEOUT_MS) {
+    const response = await fetch(API_ENDPOINTS.status);
+    const status = await response.json();
+
+    if (!response.ok) {
+      throw new Error('Backend status check failed');
+    }
+
+    if (status.camera_state === 'active' && status.camera_active) {
+      return true;
+    }
+
+    if (status.camera_state === 'error') {
+      throw new Error(status.camera_error || 'Failed to start camera');
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+
+  throw new Error('Camera startup timeout. Please try again.');
+};
+
 const useWebcam = () => {
   // State management for webcam functionality
   const [videoUrl, setVideoUrl] = useState(null);
@@ -37,7 +65,7 @@ const useWebcam = () => {
 
     try {
       // Call backend to start the camera
-      const response = await fetch(`${API_ENDPOINTS.root}start`, {
+      const response = await fetch(API_ENDPOINTS.start, {
         method: 'POST',
       });
 
@@ -46,6 +74,9 @@ const useWebcam = () => {
       if (!response.ok || data.status === 'error') {
         throw new Error(data.message || 'Failed to start camera');
       }
+
+      // Wait until backend reports the camera is fully active.
+      await waitForCameraActive();
 
       // Set the video URL to the backend stream endpoint
       setVideoUrl(API_ENDPOINTS.video);
@@ -70,7 +101,7 @@ const useWebcam = () => {
 
     try {
       // Call backend to stop the camera
-      const response = await fetch(`${API_ENDPOINTS.root}stop`, {
+      const response = await fetch(API_ENDPOINTS.stop, {
         method: 'POST',
       });
 

@@ -13,6 +13,7 @@ import math
 from flask import Flask, Response, jsonify
 from flask_cors import CORS
 import time
+import threading
 
 # ============================================================================
 # FLASK APP INITIALIZATION
@@ -25,6 +26,10 @@ CORS(app)  # Enable CORS for frontend communication
 model = None
 cap = None
 previous_keypoints_dict = {}
+camera_lock = threading.Lock()
+camera_state = "inactive"  # inactive | starting | active | error
+camera_error = None
+camera_start_thread = None
 
 # Performance optimization settings
 FRAME_SKIP = 4  # Process every Nth frame (skip intermediate frames) - INCREASED for CPU
@@ -34,6 +39,88 @@ JPEG_QUALITY = 70  # JPEG compression quality (0-100, lower = smaller file size)
 last_inference_result = None  # Cache last inference result for skipped frames
 last_rula_data = None  # Cache latest RULA assessment data for JSON API
 current_fps = 0.0  # Current actual FPS for performance monitoring
+
+# Stability settings for less jittery posture estimation
+ANGLE_EMA_ALPHA = 0.25  # Lower = more stable, higher = more responsive
+LEGS_RAISED_CONFIRM_FRAMES = 4
+LEGS_NORMAL_CONFIRM_FRAMES = 5
+
+# Temporal state for smoothing and hysteresis
+posture_stability_state = {
+    "upper_arm": None,
+    "lower_arm": None,
+    "wrist": None,
+    "neck": None,
+    "trunk": None,
+    "legs_score": 1,
+    "legs_raised_counter": 0,
+    "legs_normal_counter": 0,
+}
+
+
+def reset_stability_state():
+    """Reset temporal smoothing/debouncing state when camera session starts/stops."""
+    global posture_stability_state
+    posture_stability_state = {
+        "upper_arm": None,
+        "lower_arm": None,
+        "wrist": None,
+        "neck": None,
+        "trunk": None,
+        "legs_score": 1,
+        "legs_raised_counter": 0,
+        "legs_normal_counter": 0,
+    }
+
+
+def smooth_angle_value(key, current_value, alpha=ANGLE_EMA_ALPHA):
+    """EMA smoothing for angle values to reduce rapid frame-to-frame oscillation."""
+    global posture_stability_state
+    previous_value = posture_stability_state.get(key)
+    if previous_value is None:
+        smoothed = float(current_value)
+    else:
+        smoothed = (alpha * float(current_value)) + ((1.0 - alpha) * float(previous_value))
+    posture_stability_state[key] = smoothed
+    return smoothed
+
+
+def _open_camera_async():
+    """Open and configure camera in a background thread to keep /start responsive."""
+    global cap, camera_state, camera_error
+
+    local_cap = None
+    try:
+        # On Windows, CAP_DSHOW usually opens faster; fallback to default backend.
+        local_cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if not local_cap.isOpened():
+            local_cap.release()
+            local_cap = cv2.VideoCapture(0)
+
+        if not local_cap.isOpened():
+            raise RuntimeError("Failed to open camera")
+
+        local_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        local_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        local_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        local_cap.set(cv2.CAP_PROP_FPS, 30)
+
+        with camera_lock:
+            cap = local_cap
+            camera_state = "active"
+            camera_error = None
+
+        print("✓ Webcam started successfully")
+    except Exception as e:
+        if local_cap is not None:
+            local_cap.release()
+
+        with camera_lock:
+            cap = None
+            camera_state = "error"
+            camera_error = str(e)
+
+        print(f"✗ Error starting camera: {e}")
 
 # ============================================================================
 # POSE MODEL LOADING
@@ -346,9 +433,9 @@ def score_neck(neck_flexion_angle):
     Returns:
         Score (1-4)
     """
-    if neck_flexion_angle <= 15:
+    if neck_flexion_angle <= 20:
         return 1
-    elif neck_flexion_angle <= 30:
+    elif neck_flexion_angle <= 35:
         return 2
     elif 31 <= neck_flexion_angle <= 60:
         return 3
@@ -374,52 +461,102 @@ def score_trunk(angle):
     else:
         return 4
 
-def score_legs(keypoints, conf_threshold=0.5):
+def score_legs(keypoints, conf_threshold=0.35):
     """
-    Official RULA scoring for legs.
-    
+    Enhanced RULA scoring for legs with TABLE MANNER analysis.
+
+    Detects improper sitting postures such as raised legs on chair.
+
+    IMPORTANT POLICY:
+    - Score 2 only when there is clear raised-leg evidence.
+    - Leg visibility/asymmetry alone must NOT trigger score 2.
+
     Args:
         keypoints: YOLOv8-Pose keypoints array (x, y, confidence)
         conf_threshold: Minimum confidence threshold for keypoint detection
-    
+
     Returns:
-        Score (1-2)
+        Score (1-2):
+        - 1: Proper sitting posture (feet on floor, legs evenly balanced)
+        - 2: Poor posture (raised legs, uneven position, cross-legged)
     """
-    # Official RULA:
-    # Score 1: Legs and feet are well supported and in an evenly balanced position
-    # Score 2: Legs and feet are not evenly supported
-    
+    global posture_stability_state
+
+    raw_score = 1
+
     try:
-        # COCO keypoints: 11=left hip, 12=right hip, 13=left knee, 14=right knee
+        # COCO keypoints: 11=left hip, 12=right hip, 13=left knee, 14=right knee, 15=left ankle, 16=right ankle
         if len(keypoints) < 15:
-            # Not enough keypoints, assume neutral
-            return 1
-        
-        left_hip = keypoints[11]
-        right_hip = keypoints[12]
-        left_knee = keypoints[13]
-        right_knee = keypoints[14]
-        
-        # Check if hips and knees are visible with sufficient confidence
-        hips_visible = (left_hip[2] > conf_threshold and right_hip[2] > conf_threshold)
-        knees_visible = (left_knee[2] > conf_threshold and right_knee[2] > conf_threshold)
-        
-        if hips_visible and knees_visible:
-            # Check if legs are evenly positioned (hips level, knees level)
-            hip_height_diff = abs(left_hip[1] - right_hip[1])
-            knee_height_diff = abs(left_knee[1] - right_knee[1])
-            
-            # If both hips and knees are relatively level (within 30 pixels), assume good support
-            if hip_height_diff < 30 and knee_height_diff < 30:
-                return 1
-            else:
-                return 2
+            # Not enough keypoints, assume neutral (legs hidden under table)
+            raw_score = 1
         else:
-            # If legs not visible (occluded by table), assume neutral score
-            return 1
+            left_hip = keypoints[11]
+            right_hip = keypoints[12]
+            left_knee = keypoints[13]
+            right_knee = keypoints[14]
+
+            # In side-view, one leg can be partially occluded. Evaluate each side independently.
+            hip_vis_left = left_hip[2] > conf_threshold
+            hip_vis_right = right_hip[2] > conf_threshold
+            knee_vis_left = left_knee[2] > conf_threshold
+            knee_vis_right = right_knee[2] > conf_threshold
+
+            if not ((hip_vis_left and knee_vis_left) or (hip_vis_right and knee_vis_right)):
+                raw_score = 1
+            else:
+                raw_score = 1
+
+                # Use body scale to make thresholds less sensitive to camera distance.
+                if hip_vis_left and hip_vis_right:
+                    hip_width = abs(left_hip[0] - right_hip[0])
+                    scale = max(hip_width, 40.0)
+                else:
+                    scale = 55.0
+
+                # Rule A: if either visible leg is clearly raised, mark non-neutral.
+                if hip_vis_left and knee_vis_left:
+                    if left_knee[1] < left_hip[1] - (0.22 * scale):
+                        raw_score = 2
+
+                if hip_vis_right and knee_vis_right:
+                    if right_knee[1] < right_hip[1] - (0.22 * scale):
+                        raw_score = 2
+
+                # Rule C: ankle above knee on either visible side is non-neutral.
+                if len(keypoints) >= 17:
+                    left_ankle = keypoints[15]
+                    right_ankle = keypoints[16]
+                    ankle_vis_left = left_ankle[2] > conf_threshold
+                    ankle_vis_right = right_ankle[2] > conf_threshold
+
+                    if knee_vis_left and ankle_vis_left:
+                        if left_ankle[1] < left_knee[1] - (0.18 * scale):
+                            raw_score = 2
+
+                    if knee_vis_right and ankle_vis_right:
+                        if right_ankle[1] < right_knee[1] - (0.18 * scale):
+                            raw_score = 2
+
     except (IndexError, TypeError, AttributeError):
-        # If any error occurs, return neutral score
-        return 1
+        # If any error occurs, return neutral score (assume proper sitting)
+        raw_score = 1
+
+    # Debounce leg score changes to prevent wild flickering on noisy keypoints.
+    current_stable = posture_stability_state.get("legs_score", 1)
+
+    if raw_score == 2:
+        posture_stability_state["legs_raised_counter"] = posture_stability_state.get("legs_raised_counter", 0) + 1
+        posture_stability_state["legs_normal_counter"] = 0
+        if posture_stability_state["legs_raised_counter"] >= LEGS_RAISED_CONFIRM_FRAMES:
+            current_stable = 2
+    else:
+        posture_stability_state["legs_normal_counter"] = posture_stability_state.get("legs_normal_counter", 0) + 1
+        posture_stability_state["legs_raised_counter"] = 0
+        if posture_stability_state["legs_normal_counter"] >= LEGS_NORMAL_CONFIRM_FRAMES:
+            current_stable = 1
+
+    posture_stability_state["legs_score"] = current_stable
+    return current_stable
 
 def compute_table_A(upper_arm_score, wrist_score, lower_arm_score):
     """
@@ -540,7 +677,7 @@ def classify_rula(final_score):
 
 def calculate_official_rula(upper_arm_angle, lower_arm_angle, wrist_angle, 
                             neck_angle, trunk_angle, keypoints, person_detected=True, 
-                            is_arm_supported=False, is_abducted=False):
+                            is_arm_supported=False, is_abducted=False, legs_score_override=None):
     """
     Calculate OFFICIAL RULA score using proper tables and structure.
     
@@ -565,7 +702,7 @@ def calculate_official_rula(upper_arm_angle, lower_arm_angle, wrist_angle,
     wrist_score = score_wrist(wrist_angle)
     neck_score = score_neck(neck_angle)
     trunk_score = score_trunk(trunk_angle)
-    legs_score = score_legs(keypoints)
+    legs_score = legs_score_override if legs_score_override is not None else score_legs(keypoints)
     
     # Step 2: Compute Score A (Group A: Upper Limb)
     score_a = compute_table_A(upper_arm_score, wrist_score, lower_arm_score)
@@ -685,45 +822,56 @@ def extract_keypoints(results, smoothed_keypoints=None):
     keypoints_data = results[0].keypoints.data.cpu().numpy()  # (num_persons, 17, 3)
     return keypoints_data
 
-def calculate_keypoint_confidence(keypoints, conf_threshold=0.3):
+def calculate_keypoint_confidence(keypoints, conf_threshold=0.5):
     """
-    Calculate average confidence of detected keypoints.
-    
+    Calculate average confidence of RULA-relevant keypoints for table manner analysis.
+
+    Counts the 11 keypoints used for sitting posture RULA + leg analysis:
+    - Nose (0): for neck angle
+    - Shoulders (5, 6): for upper arm and trunk
+    - Elbows (7, 8): for lower arm angle
+    - Wrists (9, 10): for wrist angle
+    - Hips (11, 12): for trunk angle
+    - Knees (13, 14): for leg posture detection (raised legs, cross-legged)
+
     Args:
         keypoints: Keypoint array (17, 3) where [:, 2] is confidence
         conf_threshold: Minimum confidence to consider a keypoint as detected
-    
+
     Returns:
         Dictionary with confidence statistics
     """
+    # Define RULA-relevant keypoints for table manner (sitting posture + legs)
+    RULA_KEYPOINT_INDICES = [0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]  # 11 keypoints total
+
     if keypoints is None or len(keypoints) == 0:
         return {
             "average_confidence": 0.0,
             "detected_keypoints": 0,
-            "total_keypoints": 17
+            "total_keypoints": 11
         }
-    
-    # Extract confidence values (3rd column)
-    confidences = keypoints[:, 2]
-    
+
+    # Extract confidence values only for RULA-relevant keypoints
+    rula_confidences = keypoints[RULA_KEYPOINT_INDICES, 2]
+
     # Count keypoints above threshold
-    detected_count = np.sum(confidences > conf_threshold)
-    
+    detected_count = np.sum(rula_confidences > conf_threshold)
+
     # Calculate average confidence for detected keypoints
-    valid_confidences = confidences[confidences > conf_threshold]
+    valid_confidences = rula_confidences[rula_confidences > conf_threshold]
     avg_confidence = float(np.mean(valid_confidences)) if len(valid_confidences) > 0 else 0.0
-    
+
     return {
         "average_confidence": round(avg_confidence * 100, 1),  # Convert to percentage
         "detected_keypoints": int(detected_count),
-        "total_keypoints": 17
+        "total_keypoints": 11
     }
 
 # ============================================================================
 # VISUALIZATION FUNCTIONS
 # ============================================================================
 
-def draw_pose_and_rula(frame, keypoints, conf_threshold=0.3, debug=False, draw_overlay=False):
+def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_overlay=False):
     """
     Draw keypoints, calculate angles, and optionally display RULA scores on the frame.
     
@@ -873,9 +1021,7 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.3, debug=False, draw_o
                     (180, 180, 180), 1)
             
             # Display upper arm angle
-            support_text = " [SUP]" if is_arm_supported else ""
-            abducted_text = " [ABD]" if is_abducted else ""
-            upper_arm_text = f"Upper Arm: {upper_arm_angle:.1f}°{support_text}{abducted_text}"
+            upper_arm_text = f"Upper Arm: {upper_arm_angle:.1f}°"
             cv2.putText(frame, upper_arm_text,
                        (int(right_sh[0]) + 15, int(right_sh[1]) - 5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 128, 0), 2)
@@ -906,7 +1052,7 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.3, debug=False, draw_o
                         (int(left_el[0]), int(left_el[1])),
                         (int(left_wr_kp[0]), int(left_wr_kp[1])),
                         (0, 200, 0), 2)
-                cv2.putText(frame, f"L Wrist*: {left_wrist_angle:.1f}deg",
+                cv2.putText(frame, f"Wrist: {left_wrist_angle:.1f}°",
                            (int(left_wr_kp[0]) - 120, int(left_wr_kp[1]) + 20),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 220), 1)
 
@@ -924,21 +1070,18 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.3, debug=False, draw_o
                         (int(right_el_kp[0]), int(right_el_kp[1])),
                         (int(right_wr_kp[0]), int(right_wr_kp[1])),
                         (0, 255, 0), 2)
-                cv2.putText(frame, f"R Wrist*: {right_wrist_angle:.1f}deg",
+                cv2.putText(frame, f"Wrist: {right_wrist_angle:.1f}°",
                            (int(right_wr_kp[0]) + 10, int(right_wr_kp[1]) + 20),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 220), 1)
 
         if wrist_candidates:
             # Prefer the side with better confidence; use larger angle as tie-breaker.
-            selected_wrist_angle, _, selected_side, selected_wr = max(
+            selected_wrist_angle, _, _, _ = max(
                 wrist_candidates,
                 key=lambda x: (x[1], x[0])
             )
 
             rula_angles['wrist'] = selected_wrist_angle
-            cv2.putText(frame, f"Wrist side used: {selected_side}",
-                       (int(selected_wr[0]) + 10, int(selected_wr[1]) + 40),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         
         # NECK AND TRUNK ANGLES
         if (nose_kp[2] > conf_threshold and shoulder_center is not None and hip_center is not None):
@@ -987,19 +1130,83 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.3, debug=False, draw_o
             cv2.putText(frame, trunk_text,
                        (int(hip_center[0]) + 20, int(hip_center[1]) + 20),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
-            
+
             # Store for RULA
             rula_angles['trunk'] = trunk_angle
-            
+
+        # LEG DETECTION AND VISUALIZATION (for table manner analysis)
+        left_knee_kp = person_kps[13]
+        right_knee_kp = person_kps[14]
+        stable_legs_score = score_legs(person_kps, conf_threshold=0.35)
+
+        leg_threshold = 0.35  # Side-view tolerant threshold for partially occluded far leg
+
+        # Color follows stable legs score only to avoid false red flashes.
+        leg_color_stable = (0, 0, 255) if stable_legs_score == 2 else (0, 255, 0)
+
+        # Draw left leg (hip to knee) with color-coding
+        if left_hp_kp[2] > leg_threshold and left_knee_kp[2] > leg_threshold:
+            leg_color = leg_color_stable
+            cv2.circle(frame, (int(left_hp_kp[0]), int(left_hp_kp[1])),
+                      keypoint_radius, leg_color, -1)
+            cv2.circle(frame, (int(left_knee_kp[0]), int(left_knee_kp[1])),
+                      keypoint_radius, leg_color, -1)
+            cv2.line(frame, (int(left_hp_kp[0]), int(left_hp_kp[1])),
+                    (int(left_knee_kp[0]), int(left_knee_kp[1])),
+                    leg_color, 3)  # Thicker line for visibility
+
+        # Draw right leg (hip to knee) with color-coding
+        if right_hp_kp[2] > leg_threshold and right_knee_kp[2] > leg_threshold:
+            leg_color = leg_color_stable
+            cv2.circle(frame, (int(right_hp_kp[0]), int(right_hp_kp[1])),
+                      keypoint_radius, leg_color, -1)
+            cv2.circle(frame, (int(right_knee_kp[0]), int(right_knee_kp[1])),
+                      keypoint_radius, leg_color, -1)
+            cv2.line(frame, (int(right_hp_kp[0]), int(right_hp_kp[1])),
+                    (int(right_knee_kp[0]), int(right_knee_kp[1])),
+                    leg_color, 3)  # Thicker line for visibility
+
+        # Draw ankles if visible (optional - often hidden under table)
+        if len(person_kps) >= 17:
+            left_ankle_kp = person_kps[15]
+            right_ankle_kp = person_kps[16]
+
+            # Draw left knee to ankle with same color coding
+            if left_knee_kp[2] > leg_threshold and left_ankle_kp[2] > leg_threshold:
+                leg_color = leg_color_stable
+                cv2.circle(frame, (int(left_ankle_kp[0]), int(left_ankle_kp[1])),
+                          keypoint_radius, leg_color, -1)
+                cv2.line(frame, (int(left_knee_kp[0]), int(left_knee_kp[1])),
+                        (int(left_ankle_kp[0]), int(left_ankle_kp[1])),
+                        leg_color, 3)
+
+            # Draw right knee to ankle with same color coding
+            if right_knee_kp[2] > leg_threshold and right_ankle_kp[2] > leg_threshold:
+                leg_color = leg_color_stable
+                cv2.circle(frame, (int(right_ankle_kp[0]), int(right_ankle_kp[1])),
+                          keypoint_radius, leg_color, -1)
+                cv2.line(frame, (int(right_knee_kp[0]), int(right_knee_kp[1])),
+                        (int(right_ankle_kp[0]), int(right_ankle_kp[1])),
+                        leg_color, 3)
+
         # OFFICIAL RULA SCORING AND CLASSIFICATION
         required_angles = ['upper_arm', 'lower_arm', 'wrist']
         has_upper_body = all(angle_key in rula_angles for angle_key in required_angles)
         
         # Display RULA if we have upper body
         if has_upper_body:
+            # Stabilize angle inputs before discrete RULA score mapping.
+            rula_angles['upper_arm'] = smooth_angle_value('upper_arm', rula_angles['upper_arm'])
+            rula_angles['lower_arm'] = smooth_angle_value('lower_arm', rula_angles['lower_arm'])
+            rula_angles['wrist'] = smooth_angle_value('wrist', rula_angles['wrist'])
+
             # Use default neck and trunk values if not available
             neck_angle_val = rula_angles.get('neck', 5)
             trunk_angle_val = rula_angles.get('trunk', 0)
+
+            # Smooth neck/trunk too to reduce jumping when upper body is mostly still.
+            neck_angle_val = smooth_angle_value('neck', neck_angle_val)
+            trunk_angle_val = smooth_angle_value('trunk', trunk_angle_val)
             
             # Get arm support and abduction status
             arm_supported = rula_angles.get('is_arm_supported', False)
@@ -1015,7 +1222,8 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.3, debug=False, draw_o
                 person_kps,
                 person_detected=True,
                 is_arm_supported=arm_supported,
-                is_abducted=arm_abducted
+                is_abducted=arm_abducted,
+                legs_score_override=stable_legs_score
             )
             
             # Store RULA result for JSON API
@@ -1128,7 +1336,8 @@ def generate_frames():
     
     while True:
         if cap is None or not cap.isOpened():
-            break
+            time.sleep(0.05)
+            continue
             
         success, frame = cap.read()
         
@@ -1165,7 +1374,7 @@ def generate_frames():
                     current_kp = results[0].keypoints.data.cpu().numpy()
                     if len(previous_keypoints_dict) > 0 and 'last' in previous_keypoints_dict:
                         prev_kp = previous_keypoints_dict['last']
-                        smoothed_keypoints = 0.7 * current_kp + 0.3 * prev_kp
+                        smoothed_keypoints = 0.55 * current_kp + 0.45 * prev_kp
                     else:
                         smoothed_keypoints = current_kp
                     previous_keypoints_dict['last'] = current_kp
@@ -1184,7 +1393,7 @@ def generate_frames():
             
             # Draw pose and RULA analysis using cached result (smooth for skipped frames)
             if last_inference_result is not None:
-                frame, rula_data = draw_pose_and_rula(frame, last_inference_result, conf_threshold=0.3, draw_overlay=False)
+                frame, rula_data = draw_pose_and_rula(frame, last_inference_result, conf_threshold=0.5, draw_overlay=False)
                 # Store RULA data globally for JSON API endpoint
                 if rula_data is not None:
                     last_rula_data = rula_data
@@ -1242,10 +1451,12 @@ def video():
 @app.route('/status')
 def status():
     """Check system status."""
-    global cap, model
+    global cap, model, camera_state, camera_error
     return jsonify({
         "model_loaded": model is not None,
-        "camera_active": cap is not None and cap.isOpened()
+        "camera_active": cap is not None and cap.isOpened(),
+        "camera_state": camera_state,
+        "camera_error": camera_error
     })
 
 @app.route('/rula_data')
@@ -1262,60 +1473,69 @@ def rula_data():
 @app.route('/start', methods=['POST'])
 def start_camera():
     """Start the webcam."""
-    global cap
+    global model, camera_state, camera_error, camera_start_thread, previous_keypoints_dict, last_inference_result
 
-    if cap is not None and cap.isOpened():
-        return jsonify({
-            'status': 'already_active',
-            'message': 'Camera is already running'
-        })
-
-    try:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            cap = None
-            return jsonify({
-                'status': 'error',
-                'message': 'Failed to open camera'
-            }), 500
-
-        # Configure camera for better performance
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-
-        print("✓ Webcam started successfully")
-        return jsonify({
-            'status': 'success',
-            'message': 'Camera started successfully'
-        })
-    except Exception as e:
-        cap = None
-        print(f"✗ Error starting camera: {e}")
+    if model is None:
         return jsonify({
             'status': 'error',
-            'message': str(e)
-        }), 500
+            'message': 'Model is not loaded yet'
+        }), 503
+
+    with camera_lock:
+        if camera_state == "active" and cap is not None and cap.isOpened():
+            return jsonify({
+                'status': 'already_active',
+                'message': 'Camera is already running'
+            })
+
+        if camera_state == "starting":
+            return jsonify({
+                'status': 'starting',
+                'message': 'Camera is starting'
+            }), 202
+
+        camera_state = "starting"
+        camera_error = None
+        previous_keypoints_dict = {}
+        last_inference_result = None
+        reset_stability_state()
+        camera_start_thread = threading.Thread(target=_open_camera_async, daemon=True)
+        camera_start_thread.start()
+
+    return jsonify({
+        'status': 'starting',
+        'message': 'Camera start initiated'
+    }), 202
 
 @app.route('/stop', methods=['POST'])
 def stop_camera():
     """Stop the webcam and release the camera resource."""
-    global cap, last_rula_data
+    global cap, last_rula_data, camera_state, camera_error, previous_keypoints_dict, last_inference_result
 
-    if cap is None:
-        return jsonify({
-            'status': 'already_inactive',
-            'message': 'Camera is not running'
-        })
+    local_cap = None
+    with camera_lock:
+        if cap is None and camera_state in ("inactive", "error"):
+            camera_state = "inactive"
+            camera_error = None
+            return jsonify({
+                'status': 'already_inactive',
+                'message': 'Camera is not running'
+            })
+
+        local_cap = cap
+        cap = None
+        camera_state = "inactive"
+        camera_error = None
 
     try:
-        if cap is not None:
-            cap.release()  # This turns off the camera light
-            cap = None
+        if local_cap is not None:
+            local_cap.release()  # This turns off the camera light
 
         # Clear RULA data when camera stops
         last_rula_data = None
+        previous_keypoints_dict = {}
+        last_inference_result = None
+        reset_stability_state()
 
         print("✓ Webcam stopped and released")
         return jsonify({

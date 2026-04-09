@@ -1,13 +1,3 @@
-/**
- * Component Index
- * 
- * Purpose:
- * Central export file for all components in the application.
- * Simplifies imports in other files by providing a single import source.
- * 
- * Usage Example:
- * import { Header, VideoDisplay, ControlButton } from './components';
- */
 
 // UI Components
 export { default as Header } from './Header';

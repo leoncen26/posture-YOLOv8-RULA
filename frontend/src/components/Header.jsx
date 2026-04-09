@@ -1,15 +1,3 @@
-/**
- * Header Component
- * 
- * Purpose:
- * Displays the main title and subtitle of the Posture Analysis System.
- * This component provides the application branding and brief description.
- * 
- * Props: None
- * 
- * @returns {JSX.Element} The rendered header section
- */
-
 const Header = () => {
   return (
     <header className="bg-white border border-gray-200 rounded-2xl px-5 py-3 shadow-sm">
@@ -26,7 +14,7 @@ const Header = () => {
         </div>
         <div>
           <h1 className="text-[30px] font-bold text-gray-900 leading-tight">
-            Posture Detection & RULA Assessment
+            Table Manner Posture Detection & RULA Assessment
           </h1>
         </div>
       </div>
