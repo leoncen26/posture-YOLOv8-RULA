@@ -59,7 +59,7 @@ const HelpModal = ({ isOpen, onClose }) => {
                 How to use:
               </h3>
               <ol className="list-decimal list-inside space-y-2 text-gray-600">
-                <li>Click the "Aktifkan Webcam" button to start your camera</li>
+                <li>Click the "Start Camera" button to start your camera</li>
                 <li>Position yourself so you're visible from side views</li>
                 <li>Sit naturally at your desk or table</li>
                 <li>The system will analyze your posture in real-time</li>
@@ -73,7 +73,7 @@ const HelpModal = ({ isOpen, onClose }) => {
                 Tips for best results:
               </h3>
               <ul className="list-disc list-inside space-y-2 text-gray-600">
-                <li>Ensure good lighting in your workspace</li>
+                <li>Ensure good lighting</li>
                 <li>Position your camera at desk level</li>
                 <li>Keep your entire upper body visible</li>
                 <li>Avoid wearing loose clothing that obscures your posture</li>
