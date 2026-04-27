@@ -36,6 +36,7 @@ FRAME_SKIP = 4  # Process every Nth frame (skip intermediate frames) - INCREASED
 TARGET_FPS = 30  # Target frame rate for streaming
 INFERENCE_SIZE = 416  # Resize frame to this width for inference (faster processing) - REDUCED for CPU
 JPEG_QUALITY = 70  # JPEG compression quality (0-100, lower = smaller file size) - REDUCED for CPU
+SINGLE_PERSON_TARGET = True  # Force one primary person for stable single-subject RULA
 last_inference_result = None  # Cache last inference result for skipped frames
 last_rula_data = None  # Cache latest RULA assessment data for JSON API
 current_fps = 0.0  # Current actual FPS for performance monitoring
@@ -822,6 +823,57 @@ def extract_keypoints(results, smoothed_keypoints=None):
     keypoints_data = results[0].keypoints.data.cpu().numpy()  # (num_persons, 17, 3)
     return keypoints_data
 
+
+def select_primary_person(keypoints, frame_width=None):
+    """
+    Select one primary person from multi-person detections for single-subject RULA.
+
+    Selection prioritizes torso visibility and confidence, with a slight preference
+    for person location closer to frame center.
+
+    Args:
+        keypoints: NumPy array (N, 17, 3)
+        frame_width: Optional frame width for center preference
+
+    Returns:
+        NumPy array shaped (1, 17, 3) for selected person, or None if unavailable
+    """
+    if keypoints is None or len(keypoints) == 0:
+        return None
+
+    if len(keypoints) == 1:
+        return keypoints
+
+    # Core torso/arm keypoints useful for reliable RULA scoring.
+    priority_indices = [5, 6, 7, 8, 11, 12]
+    center_x = (frame_width / 2.0) if frame_width is not None else None
+
+    best_idx = 0
+    best_score = -1e9
+
+    for idx, person in enumerate(keypoints):
+        confidences = person[priority_indices, 2]
+        visible_mask = confidences > 0.35
+        visible_count = int(np.sum(visible_mask))
+        avg_conf = float(np.mean(confidences[visible_mask])) if visible_count > 0 else 0.0
+
+        # Base score: prioritize visible and confident torso/upper-limb points.
+        score = (visible_count * 3.0) + (avg_conf * 5.0)
+
+        # Small center preference for webcam single-user setups.
+        if center_x is not None:
+            valid_xy = person[person[:, 2] > 0.35, :2]
+            if len(valid_xy) > 0:
+                person_center_x = float(np.mean(valid_xy[:, 0]))
+                center_penalty = abs(person_center_x - center_x) / max(frame_width, 1.0)
+                score -= center_penalty
+
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+
+    return keypoints[best_idx:best_idx + 1]
+
 def calculate_keypoint_confidence(keypoints, conf_threshold=0.5):
     """
     Calculate average confidence of RULA-relevant keypoints for table manner analysis.
@@ -1374,7 +1426,11 @@ def generate_frames():
                     current_kp = results[0].keypoints.data.cpu().numpy()
                     if len(previous_keypoints_dict) > 0 and 'last' in previous_keypoints_dict:
                         prev_kp = previous_keypoints_dict['last']
-                        smoothed_keypoints = 0.55 * current_kp + 0.45 * prev_kp
+                        # If person count changes between frames, skip blend to avoid shape issues.
+                        if prev_kp.shape == current_kp.shape:
+                            smoothed_keypoints = 0.55 * current_kp + 0.45 * prev_kp
+                        else:
+                            smoothed_keypoints = current_kp
                     else:
                         smoothed_keypoints = current_kp
                     previous_keypoints_dict['last'] = current_kp
@@ -1387,7 +1443,13 @@ def generate_frames():
                     keypoints_scaled = keypoints.copy()
                     keypoints_scaled[:, :, 0] *= (orig_width / INFERENCE_SIZE)  # Scale x coordinates
                     keypoints_scaled[:, :, 1] *= (orig_height / inference_height)  # Scale y coordinates
-                    last_inference_result = keypoints_scaled
+
+                    # Enforce single-person RULA target for stability.
+                    if SINGLE_PERSON_TARGET:
+                        target_person = select_primary_person(keypoints_scaled, frame_width=orig_width)
+                        last_inference_result = target_person
+                    else:
+                        last_inference_result = keypoints_scaled
                 else:
                     last_inference_result = None
             
