@@ -1446,7 +1446,7 @@ def generate_frames():
                 inference_frame = cv2.resize(frame, (INFERENCE_SIZE, inference_height))
                 
                 # Run YOLOv8-Pose inference WITHOUT tracking (faster on CPU)
-                results = model.predict(inference_frame, verbose=False, half=False)
+                results = model.predict(inference_frame, verbose=False, half=False, max_det=1)
                 
                 # Apply simple exponential smoothing (no tracking IDs needed)
                 smoothed_keypoints = None
