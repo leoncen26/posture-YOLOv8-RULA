@@ -1,0 +1,16 @@
+# Ignore dataset images
+dataset/
+
+# Ignore YOLOv8 run outputs/predictions
+runs/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore virtual environments if you create one
+venv/
+env/
+.venv/

@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 import math
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 import time
 import threading
@@ -30,6 +30,29 @@ camera_lock = threading.Lock()
 camera_state = "inactive"  # inactive | starting | active | error
 camera_error = None
 camera_start_thread = None
+
+# Evaluation state (confusion matrix for 4 RULA risk classes)
+EVAL_LABELS = {
+    1: "Good Posture",
+    2: "Fair Posture - Monitor",
+    3: "Poor Posture - Improve Soon",
+    4: "Bad Posture - Improve Now",
+}
+EVAL_LABEL_ALIASES = {
+    "good": 1,
+    "good posture": 1,
+    "fair": 2,
+    "fair posture": 2,
+    "fair posture - monitor": 2,
+    "poor": 3,
+    "poor posture": 3,
+    "poor posture - improve soon": 3,
+    "bad": 4,
+    "bad posture": 4,
+    "bad posture - improve now": 4,
+}
+evaluation_confusion = [[0, 0, 0, 0] for _ in range(4)]
+evaluation_lock = threading.Lock()
 
 # Performance optimization settings
 FRAME_SKIP = 4  # Process every Nth frame (skip intermediate frames) - INCREASED for CPU
@@ -354,18 +377,8 @@ def calculate_wrist_proxy_angle(elbow, wrist):
 # RULA SCORING FUNCTIONS
 # ============================================================================
 
-def score_upper_arm(angle, is_supported=False, is_abducted=False):
-    """
-    Official RULA scoring for upper arm angle (relative to vertical down).
-    
-    Args:
-        angle: Upper arm flexion angle in degrees
-        is_supported: Whether arm is supported on table (reduces score by 1)
-        is_abducted: Whether arm is abducted (adds +1)
-    
-    Returns:
-        Score (1-6)
-    """
+def score_upper_arm(angle, is_supported=False, is_abducted=False, is_shoulder_raised=False):
+
     if angle <= 20:
         score = 1
     elif angle <= 45:
@@ -374,16 +387,16 @@ def score_upper_arm(angle, is_supported=False, is_abducted=False):
         score = 3
     else:
         score = 4
-    
-    # Reduce score if arm is supported on table
+
     if is_supported:
         score = max(1, score - 1)
-    
-    # Add +1 if arm is abducted or shoulder is raised
+
     if is_abducted:
         score += 1
-    
-    # Clamp to max 6 before table lookup
+
+    if is_shoulder_raised:
+        score += 1
+
     return min(score, 6)
 
 def score_lower_arm(angle):
@@ -418,7 +431,7 @@ def score_wrist(angle):
     # Score 3: Wrist is at or near end of range (extreme position)
     if angle <= 15:
         return 1
-    elif angle <= 45:
+    elif angle <= 25:
         return 2
     else:
         # Extreme wrist deviation (>45°)
@@ -438,7 +451,7 @@ def score_neck(neck_flexion_angle):
         return 1
     elif neck_flexion_angle <= 35:
         return 2
-    elif 31 <= neck_flexion_angle <= 60:
+    elif neck_flexion_angle <= 60:
         return 3
     else:  # >60° (severe flexion) or <0° (extension/backward)
         return 4
@@ -585,7 +598,7 @@ def compute_table_A(upper_arm_score, wrist_score, lower_arm_score):
         # Upper Arm = 5
         [[4, 4], [4, 4], [4, 5]],
         # Upper Arm = 6
-        [[5, 5], [5, 6], [6, 7]]
+        [[5, 5], [5, 6], [6, 6]]
     ]
     
     # Clamp indices
@@ -675,6 +688,74 @@ def classify_rula(final_score):
         return "Poor Posture - Improve Soon", (0, 165, 255)  # Orange
     else:  # 7
         return "Bad Posture - Improve Now", (0, 0, 255)  # Red
+
+def _normalize_eval_label(value):
+    """Normalize label input (int or str) to class id 1-4."""
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        label_id = int(value)
+        return label_id if 1 <= label_id <= 4 else None
+
+    if isinstance(value, str):
+        cleaned = value.strip().lower()
+        if cleaned.isdigit():
+            label_id = int(cleaned)
+            return label_id if 1 <= label_id <= 4 else None
+        return EVAL_LABEL_ALIASES.get(cleaned)
+
+    return None
+
+def _label_from_rula_classification(classification_text):
+    if not classification_text:
+        return None
+    return _normalize_eval_label(classification_text)
+
+def _compute_metrics_from_confusion(matrix):
+    """Compute accuracy, precision, recall, and F1 from 4x4 confusion matrix."""
+    totals = {
+        "total_samples": 0,
+        "correct": 0
+    }
+
+    per_class = []
+    for idx in range(4):
+        tp = matrix[idx][idx]
+        fp = sum(matrix[row][idx] for row in range(4)) - tp
+        fn = sum(matrix[idx]) - tp
+        denom_p = tp + fp
+        denom_r = tp + fn
+        precision = (tp / denom_p) if denom_p > 0 else 0.0
+        recall = (tp / denom_r) if denom_r > 0 else 0.0
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+
+        per_class.append({
+            "label_id": idx + 1,
+            "label": EVAL_LABELS[idx + 1],
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+            "f1": round(f1, 4),
+            "support": int(sum(matrix[idx]))
+        })
+
+        totals["total_samples"] += sum(matrix[idx])
+        totals["correct"] += tp
+
+    accuracy = (totals["correct"] / totals["total_samples"]) if totals["total_samples"] > 0 else 0.0
+    macro_precision = sum(item["precision"] for item in per_class) / 4
+    macro_recall = sum(item["recall"] for item in per_class) / 4
+    macro_f1 = sum(item["f1"] for item in per_class) / 4
+
+    return {
+        "accuracy": round(accuracy, 4),
+        "precision_macro": round(macro_precision, 4),
+        "recall_macro": round(macro_recall, 4),
+        "f1_macro": round(macro_f1, 4),
+        "per_class": per_class,
+        "total_samples": totals["total_samples"],
+        "correct": totals["correct"]
+    }
 
 def calculate_official_rula(upper_arm_angle, lower_arm_angle, wrist_angle, 
                             neck_angle, trunk_angle, keypoints, person_detected=True, 
@@ -1417,7 +1498,7 @@ def generate_frames():
                 inference_frame = cv2.resize(frame, (INFERENCE_SIZE, inference_height))
                 
                 # Run YOLOv8-Pose inference WITHOUT tracking (faster on CPU)
-                results = model.predict(inference_frame, verbose=False, half=False)
+                results = model.predict(inference_frame, verbose=False, half=False, max_det=1)
                 
                 # Apply simple exponential smoothing (no tracking IDs needed)
                 smoothed_keypoints = None
@@ -1500,7 +1581,10 @@ def index():
             "/": "API information",
             "/video": "Video stream with pose analysis",
             "/rula_data": "Latest RULA assessment data (JSON)",
-            "/status": "System status"
+            "/status": "System status",
+            "/evaluation/record": "POST ground-truth label (and optional predicted label)",
+            "/evaluation/result": "Evaluation metrics and confusion matrix",
+            "/evaluation/reset": "Reset evaluation counters"
         }
     })
 
@@ -1531,6 +1615,79 @@ def rula_data():
             "message": "No person detected or waiting for analysis"
         })
     return jsonify(last_rula_data)
+
+@app.route('/evaluation/record', methods=['POST'])
+def evaluation_record():
+    """Record an evaluation sample into the confusion matrix."""
+    global last_rula_data
+
+    payload = request.get_json(silent=True) or {}
+    true_label_raw = payload.get("true_label")
+    predicted_label_raw = payload.get("predicted_label")
+
+    true_label_id = _normalize_eval_label(true_label_raw)
+    if true_label_id is None:
+        return jsonify({
+            "status": "error",
+            "message": "true_label must be 1-4 or a valid label string"
+        }), 400
+
+    if predicted_label_raw is None:
+        if last_rula_data is None or not last_rula_data.get("detected"):
+            return jsonify({
+                "status": "error",
+                "message": "No detected posture. Provide predicted_label or wait for detection."
+            }), 409
+        predicted_label_id = _label_from_rula_classification(last_rula_data.get("classification"))
+    else:
+        predicted_label_id = _normalize_eval_label(predicted_label_raw)
+
+    if predicted_label_id is None:
+        return jsonify({
+            "status": "error",
+            "message": "predicted_label must be 1-4 or a valid label string"
+        }), 400
+
+    with evaluation_lock:
+        evaluation_confusion[true_label_id - 1][predicted_label_id - 1] += 1
+
+    return jsonify({
+        "status": "success",
+        "true_label": {
+            "id": true_label_id,
+            "label": EVAL_LABELS[true_label_id]
+        },
+        "predicted_label": {
+            "id": predicted_label_id,
+            "label": EVAL_LABELS[predicted_label_id]
+        }
+    })
+
+@app.route('/evaluation/result')
+def evaluation_result():
+    """Return current evaluation metrics and confusion matrix."""
+    with evaluation_lock:
+        matrix = [row[:] for row in evaluation_confusion]
+
+    metrics = _compute_metrics_from_confusion(matrix)
+    return jsonify({
+        "labels": EVAL_LABELS,
+        "confusion_matrix": matrix,
+        "metrics": metrics
+    })
+
+@app.route('/evaluation/reset', methods=['POST'])
+def evaluation_reset():
+    """Reset confusion matrix counters."""
+    with evaluation_lock:
+        for i in range(4):
+            for j in range(4):
+                evaluation_confusion[i][j] = 0
+
+    return jsonify({
+        "status": "success",
+        "message": "Evaluation counters reset"
+    })
 
 @app.route('/start', methods=['POST'])
 def start_camera():
