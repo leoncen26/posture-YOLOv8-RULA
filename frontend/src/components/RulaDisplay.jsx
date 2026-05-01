@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { getVoiceFeedbackEnglish, getVoiceFeedbackIndonesian } from '../utils/voiceFeedback';
 
+// Maximum scores for each body part (used for ratio-based color calculation)
 const SCORE_LIMITS = {
   upper_arm_score: 6,
   lower_arm_score: 2,
@@ -38,10 +39,12 @@ const getConfidenceColor = (conf) => {
 };
 
 const getMetricColor = (score, maxScore) => {
+  // Ratio-based coloring reflects the score as a proportion of each joint's maximum
+  // This ensures colors are consistent relative to each body part's scale
   const ratio = maxScore > 0 ? score / maxScore : 0;
-  if (ratio <= 0.33) return '#16a34a';
-  if (ratio <= 0.66) return '#d97706';
-  return '#dc2626';
+  if (ratio <= 0.5) return '#16a34a';     // Green - Good (0-50% of max)
+  if (ratio <= 0.75) return '#d97706';    // Orange - Fair (50-75% of max)
+  return '#dc2626';                        // Red - Poor (75-100% of max)
 };
 
 
@@ -254,7 +257,7 @@ const RulaDisplay = ({ rulaData }) => {
         </div>
 
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-          <div className="flex items-center justify-between text-xs mb-2">
+          <div className="flex items-center justify-between text-xs mb-2">  
             <span className="text-gray-600 font-medium">Detection quality: {avgConfidence}%</span>
             <span className="text-gray-500">{detectedKps}/{totalKps} keypoints</span>
           </div>

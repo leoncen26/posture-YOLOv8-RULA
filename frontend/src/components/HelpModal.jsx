@@ -81,6 +81,43 @@ const HelpModal = ({ isOpen, onClose }) => {
               </ul>
             </section>
             
+            {/* Color Indicators */}
+            <section>
+              <h3 className="text-lg font-semibold text-gray-800 mb-3">
+                Understanding Color Indicators
+              </h3>
+              <p className="text-gray-600 mb-3">
+                Each body part's score is displayed with a color that reflects how severe the issue is <strong>relative to that body part's maximum score</strong>:
+              </p>
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-green-500 rounded"></div>
+                  <div>
+                    <p className="font-semibold text-gray-800">Green (Good)</p>
+                    <p className="text-sm text-gray-600">0-50% of maximum score - acceptable posture</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-amber-500 rounded"></div>
+                  <div>
+                    <p className="font-semibold text-gray-800">Orange (Fair)</p>
+                    <p className="text-sm text-gray-600">50-75% of maximum score - needs attention</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-red-500 rounded"></div>
+                  <div>
+                    <p className="font-semibold text-gray-800">Red (Poor)</p>
+                    <p className="text-sm text-gray-600">75-100% of maximum score - requires correction</p>
+                  </div>
+                </div>
+              </div>
+              <p className="text-gray-600 mt-3 text-sm">
+                <strong>Example:</strong> Lower Arm has a max score of 2, so score 1 (50%) shows green, and score 2 (100%) shows red. 
+                Upper Arm has a max score of 6, so scores 1-3 show green, 4-5 show orange, and 6 shows red.
+              </p>
+            </section>
+            
             {/* Privacy Notice */}
             <section className="bg-blue-50 p-4 rounded-lg">
               <h3 className="text-lg font-semibold text-blue-800 mb-2">

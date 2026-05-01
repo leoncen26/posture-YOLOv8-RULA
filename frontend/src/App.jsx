@@ -31,7 +31,6 @@ import { useState } from "react";
 import Header from "./components/Header";
 import VideoDisplay from "./components/VideoDisplay";
 import ControlButton from "./components/ControlButton";
-import HelpButton from "./components/HelpButton";
 import HelpModal from "./components/HelpModal";
 import RulaDisplay from "./components/RulaDisplay";
 import StatusBar from "./components/StatusBar";
@@ -67,16 +66,13 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      {/* Help Button - Fixed position in top-right */}
-      <HelpButton onClick={handleHelpClick} />
-
       {/* Help Modal - Overlay */}
       <HelpModal isOpen={isHelpModalOpen} onClose={handleCloseHelpModal} />
 
       {/* Main Content Container - Uses flexbox with gaps for proper spacing */}
       <div className="max-w-350 mx-auto px-4 py-4 flex flex-col gap-4 min-h-screen">
-        {/* Application Header/Title */}
-        <Header />
+        {/* Application Header/Title with Help Button */}
+        <Header onHelpClick={handleHelpClick} />
 
         {/* Error Message Display */}
         {error && (
