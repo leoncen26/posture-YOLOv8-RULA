@@ -2,147 +2,144 @@
  * useWebcam Custom Hook
  *
  * Purpose:
- * Manages backend camera connection for video streaming.
- * Provides state management for video URL and backend communication.
- *
- * Returns:
- * @returns {Object} Hook state and methods
- *   - {string|null} videoUrl - The backend video stream URL
- *   - {boolean} isActive - Whether the webcam is currently active
- *   - {boolean} isLoading - Whether the webcam is initializing
- *   - {string|null} error - Any error message from backend
- *   - {Function} toggleWebcam - Function to start/stop the webcam
- *
- * Usage Example:
- * const { videoUrl, isActive, toggleWebcam } = useWebcam();
+ * Manages frontend local camera and communication with backend.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { API_ENDPOINTS } from '../config/api';
 
-const STARTUP_TIMEOUT_MS = 15000;
-const POLL_INTERVAL_MS = 250;
-
-const waitForCameraActive = async () => {
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < STARTUP_TIMEOUT_MS) {
-    const response = await fetch(API_ENDPOINTS.status);
-    const status = await response.json();
-
-    if (!response.ok) {
-      throw new Error('Backend status check failed');
-    }
-
-    if (status.camera_state === 'active' && status.camera_active) {
-      return true;
-    }
-
-    if (status.camera_state === 'error') {
-      throw new Error(status.camera_error || 'Failed to start camera');
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
-
-  throw new Error('Camera startup timeout. Please try again.');
-};
-
 const useWebcam = () => {
-  // State management for webcam functionality
   const [videoUrl, setVideoUrl] = useState(null);
   const [isActive, setIsActive] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  /**
-   * Start Webcam Function
-   * Calls backend /start endpoint to activate camera
-   */
+  const streamRef = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const processingRef = useRef(false);
+  const activeRef = useRef(false);
+
+  const processFrameCycle = async () => {
+    if (!activeRef.current || !videoRef.current || !canvasRef.current) return;
+    
+    if (processingRef.current) {
+        requestAnimationFrame(processFrameCycle);
+        return;
+    }
+    
+    processingRef.current = true;
+    try {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        const base64Image = canvas.toDataURL('image/jpeg', 0.5);
+        
+        const response = await fetch(API_ENDPOINTS.processFrame, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: base64Image })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.image) {
+            setVideoUrl(data.image);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error processing:', e);
+    } finally {
+      processingRef.current = false;
+      if (activeRef.current) {
+        requestAnimationFrame(processFrameCycle);
+      }
+    }
+  };
+
   const startWebcam = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
     try {
-      // Call backend to start the camera
-      const response = await fetch(API_ENDPOINTS.start, {
-        method: 'POST',
+      await fetch(API_ENDPOINTS.start, { method: 'POST' }).catch(() => {});
+
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } 
       });
+      streamRef.current = stream;
 
-      const data = await response.json();
+      let video = document.createElement('video');
+      video.srcObject = stream;
+      video.playsInline = true;
+      video.muted = true;
+      video.play();
+      videoRef.current = video;
 
-      if (!response.ok || data.status === 'error') {
-        throw new Error(data.message || 'Failed to start camera');
-      }
+      let canvas = document.createElement('canvas');
+      canvasRef.current = canvas;
 
-      // Wait until backend reports the camera is fully active.
-      await waitForCameraActive();
-
-      // Set the video URL to the backend stream endpoint
-      setVideoUrl(API_ENDPOINTS.video);
       setIsActive(true);
       setIsLoading(false);
+      activeRef.current = true;
+
+      video.onloadedmetadata = () => {
+        processFrameCycle();
+      };
+      
     } catch (err) {
       console.error('Error starting webcam:', err);
-      setError(err.message || 'Failed to connect to backend');
+      setError(err.message || 'Failed to initialize camera');
       setIsLoading(false);
       setIsActive(false);
+      activeRef.current = false;
     }
   }, []);
 
-  /**
-   * Stop Webcam Function
-   * Calls backend /stop endpoint to release camera
-   * This will turn off the camera light
-   */
   const stopWebcam = useCallback(async () => {
     setIsLoading(true);
     setError(null);
+    activeRef.current = false;
 
     try {
-      // Call backend to stop the camera
-      const response = await fetch(API_ENDPOINTS.stop, {
-        method: 'POST',
-      });
-
-      const data = await response.json();
-
-      if (!response.ok && data.status === 'error') {
-        throw new Error(data.message || 'Failed to stop camera');
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.srcObject = null;
+        videoRef.current = null;
+      }
+      canvasRef.current = null;
 
-      // Clear the video URL and set inactive
+      await fetch(API_ENDPOINTS.stop, { method: 'POST' }).catch(() => {});
+
       setVideoUrl(null);
       setIsActive(false);
       setIsLoading(false);
     } catch (err) {
-      console.error('Error stopping webcam:', err);
-      // Even if there's an error, we still stop showing the video
+      console.error('Error stopping:', err);
+      setError(err.message || 'Failed to disconnect');
       setVideoUrl(null);
       setIsActive(false);
       setIsLoading(false);
     }
   }, []);
 
-  /**
-   * Toggle Webcam Function
-   * Starts the webcam if inactive, stops if active
-   */
-  const toggleWebcam = useCallback(() => {
-    if (isActive) {
-      stopWebcam();
-    } else {
-      startWebcam();
-    }
-  }, [isActive, startWebcam, stopWebcam]);
-
-  // Return hook interface
   return {
     videoUrl,
     isActive,
     isLoading,
     error,
-    toggleWebcam,
+    toggleWebcam: isActive ? stopWebcam : startWebcam
   };
 };
 

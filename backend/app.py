@@ -431,7 +431,7 @@ def score_wrist(angle):
     # Score 3: Wrist is at or near end of range (extreme position)
     if angle <= 15:
         return 1
-    elif angle <= 25:
+    elif angle <= 35:
         return 2
     else:
         # Extreme wrist deviation (>45°)
@@ -1597,10 +1597,10 @@ def video():
 @app.route('/status')
 def status():
     """Check system status."""
-    global cap, model, camera_state, camera_error
+    global model, camera_state, camera_error
     return jsonify({
         "model_loaded": model is not None,
-        "camera_active": cap is not None and cap.isOpened(),
+        "camera_active": camera_state == "active",
         "camera_state": camera_state,
         "camera_error": camera_error
     })
@@ -1689,10 +1689,89 @@ def evaluation_reset():
         "message": "Evaluation counters reset"
     })
 
+import base64
+@app.route('/process_frame', methods=['POST'])
+def process_frame():
+    """Process a single frame from the client."""
+    global model, previous_keypoints_dict, last_inference_result, last_rula_data, current_fps
+    
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 503
+        
+    data = request.json
+    if not data or 'image' not in data:
+        return jsonify({"error": "No image provided"}), 400
+        
+    img_data = data['image']
+    if img_data.startswith('data:image'):
+        img_data = img_data.split(',')[1]
+        
+    image_bytes = base64.b64decode(img_data)
+    np_arr = np.frombuffer(image_bytes, np.uint8)
+    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    
+    if frame is None:
+        return jsonify({"error": "Invalid image"}), 400
+        
+    orig_height, orig_width = frame.shape[:2]
+    scale_factor = INFERENCE_SIZE / orig_width
+    inference_height = int(orig_height * scale_factor)
+    inference_frame = cv2.resize(frame, (INFERENCE_SIZE, inference_height))
+    
+    # Inference
+    results = model.predict(inference_frame, verbose=False, half=False, max_det=1)
+    
+    smoothed_keypoints = None
+    if len(results) > 0 and results[0].keypoints is not None:
+        current_kp = results[0].keypoints.data.cpu().numpy()
+        if len(previous_keypoints_dict) > 0 and 'last' in previous_keypoints_dict:
+            prev_kp = previous_keypoints_dict['last']
+            if prev_kp.shape == current_kp.shape:
+                smoothed_keypoints = 0.55 * current_kp + 0.45 * prev_kp
+            else:
+                smoothed_keypoints = current_kp
+        else:
+            smoothed_keypoints = current_kp
+        previous_keypoints_dict['last'] = current_kp
+    
+    keypoints = smoothed_keypoints if smoothed_keypoints is not None else None
+    
+    if keypoints is not None:
+        keypoints_scaled = keypoints.copy()
+        keypoints_scaled[:, :, 0] *= (orig_width / INFERENCE_SIZE)
+        keypoints_scaled[:, :, 1] *= (orig_height / inference_height)
+
+        if SINGLE_PERSON_TARGET:
+            target_person = select_primary_person(keypoints_scaled, frame_width=orig_width)
+            last_inference_result = target_person
+        else:
+            last_inference_result = keypoints_scaled
+    else:
+        last_inference_result = None
+
+    if last_inference_result is not None:
+        frame, rula_data = draw_pose_and_rula(frame, last_inference_result, conf_threshold=0.5, draw_overlay=False)
+        if rula_data is not None:
+            last_rula_data = rula_data
+    else:
+        last_rula_data = {"detected": False, "message": "No person detected"}
+        cv2.putText(frame, "No person detected", (20, frame.shape[0] - 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+    ret, buffer = cv2.imencode('.jpg', frame, encode_param)
+    
+    response_data = {
+        "rula_data": last_rula_data
+    }
+    if ret:
+        response_data["image"] = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
+        
+    return jsonify(response_data)
+
 @app.route('/start', methods=['POST'])
 def start_camera():
     """Start the webcam."""
-    global model, camera_state, camera_error, camera_start_thread, previous_keypoints_dict, last_inference_result
+    global model, camera_state, camera_error, previous_keypoints_dict, last_inference_result
 
     if model is None:
         return jsonify({
@@ -1701,30 +1780,16 @@ def start_camera():
         }), 503
 
     with camera_lock:
-        if camera_state == "active" and cap is not None and cap.isOpened():
-            return jsonify({
-                'status': 'already_active',
-                'message': 'Camera is already running'
-            })
-
-        if camera_state == "starting":
-            return jsonify({
-                'status': 'starting',
-                'message': 'Camera is starting'
-            }), 202
-
-        camera_state = "starting"
+        camera_state = "active"
         camera_error = None
         previous_keypoints_dict = {}
         last_inference_result = None
         reset_stability_state()
-        camera_start_thread = threading.Thread(target=_open_camera_async, daemon=True)
-        camera_start_thread.start()
-
+        
     return jsonify({
-        'status': 'starting',
-        'message': 'Camera start initiated'
-    }), 202
+        'status': 'success',
+        'message': 'Client processing mode started'
+    }), 200
 
 @app.route('/stop', methods=['POST'])
 def stop_camera():
