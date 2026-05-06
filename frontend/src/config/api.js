@@ -6,14 +6,14 @@
  */
 
 // Backend server configuration
-export const BACKEND_URL = 'http://localhost:5000';
-
+export const BACKEND_URL = 'http://localhost:5000'; 
 // API endpoints
 export const API_ENDPOINTS = {
   root: `${BACKEND_URL}/`,
   video: `${BACKEND_URL}/video`,
   status: `${BACKEND_URL}/status`,
   rulaData: `${BACKEND_URL}/rula_data`,
+  processFrame: `${BACKEND_URL}/process_frame`,
   start: `${BACKEND_URL}/start`,
   stop: `${BACKEND_URL}/stop`,
 };
