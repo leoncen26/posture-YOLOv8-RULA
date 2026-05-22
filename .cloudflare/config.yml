@@ -1,0 +1,13 @@
+tunnel: a3b4c51a-a1a6-4023-b5e8-1726e877b178   # Ganti dengan Tunnel ID kamu
+
+credentials-file: C:\path\ke\project\.cloudflared\xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.json
+
+ingress:
+  - hostname: frontend-leon.trycloudflare.com
+    service: http://localhost:5173
+
+  - hostname: backend-leon.trycloudflare.com
+    service: http://localhost:5000
+
+  # Catch-all rule (wajib ada)
+  - service: http_status:404

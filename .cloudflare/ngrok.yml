@@ -1,0 +1,14 @@
+version: 2
+authtoken: 3E4Rft8MPMGRRHWcrgUPTb3QYLk_3zUZo4V2kSQmCqMhiP1gG   # Dapatkan dari https://dashboard.ngrok.com/get-started/your-authtoken
+
+tunnels:
+  frontend:
+    proto: http
+    addr: 5173
+    inspect: false
+    
+
+  backend:
+    proto: http
+    addr: 5000
+    inspect: false

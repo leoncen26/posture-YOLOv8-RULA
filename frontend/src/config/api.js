@@ -7,6 +7,7 @@
 
 // Backend server configuration
 export const BACKEND_URL = 'http://localhost:5000';
+// export const BACKEND_URL = 'https://killing-kentucky-let-airport.trycloudflare.com';
 
 // API endpoints
 export const API_ENDPOINTS = {
@@ -16,6 +17,7 @@ export const API_ENDPOINTS = {
   rulaData: `${BACKEND_URL}/rula_data`,
   start: `${BACKEND_URL}/start`,
   stop: `${BACKEND_URL}/stop`,
+  processFrame: `${BACKEND_URL}/process_frame`,
 };
 
 // Fetch helper with error handling

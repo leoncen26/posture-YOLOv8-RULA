@@ -2,126 +2,155 @@
  * useWebcam Custom Hook
  *
  * Purpose:
- * Manages backend camera connection for video streaming.
- * Provides state management for video URL and backend communication.
- *
- * Returns:
- * @returns {Object} Hook state and methods
- *   - {string|null} videoUrl - The backend video stream URL
- *   - {boolean} isActive - Whether the webcam is currently active
- *   - {boolean} isLoading - Whether the webcam is initializing
- *   - {string|null} error - Any error message from backend
- *   - {Function} toggleWebcam - Function to start/stop the webcam
- *
- * Usage Example:
- * const { videoUrl, isActive, toggleWebcam } = useWebcam();
+ * Manages frontend local camera and communication with backend.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { API_ENDPOINTS } from '../config/api';
 
-const STARTUP_TIMEOUT_MS = 15000;
-const POLL_INTERVAL_MS = 250;
-
-const waitForCameraActive = async () => {
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < STARTUP_TIMEOUT_MS) {
-    const response = await fetch(API_ENDPOINTS.status);
-    const status = await response.json();
-
-    if (!response.ok) {
-      throw new Error('Backend status check failed');
-    }
-
-    if (status.camera_state === 'active' && status.camera_active) {
-      return true;
-    }
-
-    if (status.camera_state === 'error') {
-      throw new Error(status.camera_error || 'Failed to start camera');
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
-
-  throw new Error('Camera startup timeout. Please try again.');
-};
-
 const useWebcam = () => {
-  // State management for webcam functionality
   const [videoUrl, setVideoUrl] = useState(null);
   const [isActive, setIsActive] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [fps, setFps] = useState(0);
 
-  /**
-   * Start Webcam Function
-   * Calls backend /start endpoint to activate camera
-   */
+  const streamRef = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const processingRef = useRef(false);
+  const activeRef = useRef(false);
+  
+  const frameCountRef = useRef(0);
+  const lastFpsTimeRef = useRef(Date.now());
+  const lastRequestTimeRef = useRef(0);
+
+  const processFrameCycle = async () => {
+    if (!activeRef.current || !videoRef.current || !canvasRef.current) return;
+    
+    // Target 15 FPS: Minimal interval between frames = 1000ms / 15 = ~67ms
+    const MIN_INTERVAL_MS = 67; 
+    const now = Date.now();
+    
+    if (processingRef.current || (now - lastRequestTimeRef.current < MIN_INTERVAL_MS)) {
+        // Retry later
+        setTimeout(() => {
+          if (activeRef.current) requestAnimationFrame(processFrameCycle);
+        }, 10);
+        return;
+    }
+    
+    processingRef.current = true;
+    lastRequestTimeRef.current = now;
+    
+    try {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        // JPEG compression to save bandwidth
+        const base64Image = canvas.toDataURL('image/jpeg', 0.5);
+        
+        const response = await fetch(API_ENDPOINTS.processFrame, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: base64Image })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.image) {
+            setVideoUrl(data.image); // Display annotated image returned by backend
+          }          
+          // Calculate Front-End rendering FPS 
+          frameCountRef.current += 1;
+          const now = Date.now();
+          const elapsed = now - lastFpsTimeRef.current;
+          if (elapsed >= 1000) {
+            setFps(Math.round((frameCountRef.current * 1000) / elapsed));
+            frameCountRef.current = 0;
+            lastFpsTimeRef.current = now;
+          }        }
+      }
+    } catch (e) {
+      console.error('Error processing frame:', e);
+    } finally {
+      processingRef.current = false;
+      if (activeRef.current) {
+        requestAnimationFrame(processFrameCycle);
+      }
+    }
+  };
+
   const startWebcam = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
     try {
-      // Call backend to start the camera
-      const response = await fetch(API_ENDPOINTS.start, {
-        method: 'POST',
+      // Warm up backend
+      await fetch(API_ENDPOINTS.start, { method: 'POST' }).catch(() => {});
+
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } 
       });
+      streamRef.current = stream;
 
-      const data = await response.json();
+      let video = document.createElement('video');
+      video.srcObject = stream;
+      video.playsInline = true;
+      video.muted = true;
+      video.play();
+      videoRef.current = video;
 
-      if (!response.ok || data.status === 'error') {
-        throw new Error(data.message || 'Failed to start camera');
-      }
+      let canvas = document.createElement('canvas');
+      canvasRef.current = canvas;
 
-      // Wait until backend reports the camera is fully active.
-      await waitForCameraActive();
-
-      // Set the video URL to the backend stream endpoint
-      setVideoUrl(API_ENDPOINTS.video);
+      activeRef.current = true;
       setIsActive(true);
       setIsLoading(false);
+
+      // Start processing loop once video is ready
+      video.onloadeddata = () => {
+        requestAnimationFrame(processFrameCycle);
+      };
     } catch (err) {
-      console.error('Error starting webcam:', err);
-      setError(err.message || 'Failed to connect to backend');
+      console.error('Error opening webcam:', err);
+      setError('Failed to open local camera. Please allow permissions.');
       setIsLoading(false);
       setIsActive(false);
     }
   }, []);
 
-  /**
-   * Stop Webcam Function
-   * Calls backend /stop endpoint to release camera
-   * This will turn off the camera light
-   */
   const stopWebcam = useCallback(async () => {
     setIsLoading(true);
     setError(null);
+    activeRef.current = false;
+    setFps(0); // Reset FPS tracking
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+      videoRef.current = null;
+    }
 
     try {
-      // Call backend to stop the camera
-      const response = await fetch(API_ENDPOINTS.stop, {
-        method: 'POST',
-      });
-
-      const data = await response.json();
-
-      if (!response.ok && data.status === 'error') {
-        throw new Error(data.message || 'Failed to stop camera');
-      }
-
-      // Clear the video URL and set inactive
-      setVideoUrl(null);
-      setIsActive(false);
-      setIsLoading(false);
+      await fetch(API_ENDPOINTS.stop, { method: 'POST' }).catch(() => {});
     } catch (err) {
       console.error('Error stopping webcam:', err);
-      // Even if there's an error, we still stop showing the video
-      setVideoUrl(null);
-      setIsActive(false);
-      setIsLoading(false);
     }
+
+    setVideoUrl(null);
+    setIsActive(false);
+    setIsLoading(false);
   }, []);
 
   /**
@@ -136,12 +165,22 @@ const useWebcam = () => {
     }
   }, [isActive, startWebcam, stopWebcam]);
 
+  // Ensure camera is properly released when component unmounts
+  useEffect(() => {
+    return () => {
+      if (activeRef.current) {
+        stopWebcam();
+      }
+    };
+  }, [stopWebcam]);
+
   // Return hook interface
   return {
     videoUrl,
     isActive,
     isLoading,
     error,
+    fps,
     toggleWebcam,
   };
 };

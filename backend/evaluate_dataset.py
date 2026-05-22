@@ -131,5 +131,44 @@ def main():
         print(f"  F1-Score  : {cls['f1']:.4f}")
         print("")
 
+    # ==========================================
+    # GENERATE CONFUSION MATRIX VISUALIZATION
+    # ==========================================
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        import numpy as np
+
+        # Set up the labels for the axes
+        class_names = ['Good', 'Fair', 'Poor', 'Bad']
+        
+        # Convert confusion matrix to numpy array
+        cm_array = np.array(confusion_matrix)
+        
+        # Create a figure and axis
+        plt.figure(figsize=(8, 6))
+        
+        # Create heatmap using seaborn
+        # annot=True shows the numbers inside boxes, cmap="Blues" gives a nice academic color scheme
+        sns.heatmap(cm_array, annot=True, fmt='d', cmap='Blues', 
+                    xticklabels=class_names, yticklabels=class_names,
+                    cbar=True, annot_kws={"size": 14})
+        
+        # Add titles and labels
+        plt.title('RULA Posture Classification - Confusion Matrix', fontsize=16, pad=15)
+        plt.xlabel('Predicted Posture', fontsize=12, labelpad=10)
+        plt.ylabel('True (Actual) Posture', fontsize=12, labelpad=10)
+        
+        # Save the plot as a high-resolution image perfect for a Skripsi
+        plt.tight_layout()
+        plt.savefig('confusion_matrix_result.png', dpi=300)
+        print("\n[ VISUALIZATION ]")
+        print("✓ Successfully saved confusion matrix plot to 'confusion_matrix_result.png'")
+        
+    except ImportError:
+        print("\n[ VISUALIZATION ]")
+        print("To generate a graphic image of the confusion matrix, please install matplotlib and seaborn:")
+        print("Run: pip install matplotlib seaborn")
+
 if __name__ == '__main__':
     main()

@@ -1689,6 +1689,90 @@ def evaluation_reset():
         "message": "Evaluation counters reset"
     })
 
+import base64
+
+@app.route('/process_frame', methods=['POST'])
+def process_frame():
+    """Receive frame from frontend, process with YOLO, return annotated frame."""
+    global model, last_rula_data, previous_keypoints_dict, last_inference_result
+
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 503
+
+    try:
+        data = request.json
+        if not data or 'image' not in data:
+            return jsonify({"error": "No image data"}), 400
+
+        # Extract base64 part
+        image_data = data['image']
+        if ',' in image_data:
+            image_data = image_data.split(',')[1]
+
+        # Decode base64 to OpenCV frame
+        img_bytes = base64.b64decode(image_data)
+        np_arr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        orig_height, orig_width = frame.shape[:2]
+
+        # Downscale for inference
+        scale_factor = INFERENCE_SIZE / orig_width
+        inference_height = int(orig_height * scale_factor)
+        inference_frame = cv2.resize(frame, (INFERENCE_SIZE, inference_height))
+
+        # Run YOLO inference
+        results = model.predict(inference_frame, verbose=False, half=False, max_det=1)
+
+        smoothed_keypoints = None
+        if len(results) > 0 and results[0].keypoints is not None:
+            current_kp = results[0].keypoints.data.cpu().numpy()
+            if len(previous_keypoints_dict) > 0 and 'last' in previous_keypoints_dict:
+                prev_kp = previous_keypoints_dict['last']
+                if prev_kp.shape == current_kp.shape:
+                    smoothed_keypoints = 0.55 * current_kp + 0.45 * prev_kp
+                else:
+                    smoothed_keypoints = current_kp
+            else:
+                smoothed_keypoints = current_kp
+            previous_keypoints_dict['last'] = current_kp
+
+        keypoints = smoothed_keypoints if smoothed_keypoints is not None else None
+
+        if keypoints is not None:
+            keypoints_scaled = keypoints.copy()
+            keypoints_scaled[:, :, 0] *= (orig_width / INFERENCE_SIZE)
+            keypoints_scaled[:, :, 1] *= (orig_height / inference_height)
+
+            if SINGLE_PERSON_TARGET:
+                target_person = select_primary_person(keypoints_scaled, frame_width=orig_width)
+                last_inference_result = target_person
+            else:
+                last_inference_result = keypoints_scaled
+        else:
+            last_inference_result = None
+
+        if last_inference_result is not None:
+            frame, rula_data = draw_pose_and_rula(frame, last_inference_result, conf_threshold=0.5, draw_overlay=False)
+            if rula_data is not None:
+                last_rula_data = rula_data
+        else:
+            last_rula_data = {"detected": False, "message": "No person detected"}
+            cv2.putText(frame, "No person detected", (20, frame.shape[0] - 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+        _, buffer = cv2.imencode('.jpg', frame, encode_param)
+        encoded_image = base64.b64encode(buffer).decode('utf-8')
+
+        return jsonify({
+            "image": f"data:image/jpeg;base64,{encoded_image}"
+        })
+
+    except Exception as e:
+        print(f"Error processing frame: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/start', methods=['POST'])
 def start_camera():
     """Start the webcam."""

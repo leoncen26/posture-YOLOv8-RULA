@@ -41,10 +41,13 @@ import useRulaData from "./hooks/useRulaData";
 
 function App() {
   // Backend connection state management via custom hook
-  const { videoUrl, isActive, isLoading, error, toggleWebcam } = useWebcam();
+  const { videoUrl, isActive, isLoading, error, fps, toggleWebcam } = useWebcam();
 
   // RULA data fetching hook
-  const rulaData = useRulaData(isActive);
+  const rawRulaData = useRulaData(isActive);
+  
+  // Combine RULA API data with Frontend True FPS
+  const rulaData = rawRulaData ? { ...rawRulaData, fps: fps } : null;
 
   // Modal state management
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
