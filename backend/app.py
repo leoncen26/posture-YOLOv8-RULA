@@ -8,6 +8,17 @@ calculating RULA scores for ergonomic posture assessment.
 
 import cv2
 import numpy as np
+import os
+
+# STRICT CPU THREAD LIMITING: 
+# YOLO/PyTorch uses all CPU cores by default, which completely starves the Flask
+# web server thread and drops FPS to 3-5. We must restrict it to 1-2 threads.
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 from ultralytics import YOLO
 import math
 from flask import Flask, Response, jsonify, request
@@ -15,12 +26,15 @@ from flask_cors import CORS
 import time
 import threading
 
+import torch
+torch.set_num_threads(1)
+
 # ============================================================================
 # FLASK APP INITIALIZATION
 # ============================================================================
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend communication
+CORS(app, max_age=3600)  # Enable CORS with preflight caching (eliminates redundant OPTIONS requests)
 
 # Global variables for model and video capture
 model = None
@@ -57,12 +71,17 @@ evaluation_lock = threading.Lock()
 # Performance optimization settings
 FRAME_SKIP = 4  # Process every Nth frame (skip intermediate frames) - INCREASED for CPU
 TARGET_FPS = 30  # Target frame rate for streaming
-INFERENCE_SIZE = 416  # Resize frame to this width for inference (faster processing) - REDUCED for CPU
-JPEG_QUALITY = 70  # JPEG compression quality (0-100, lower = smaller file size) - REDUCED for CPU
+INFERENCE_SIZE = 416  # Resize frame to this width for inference (faster processing)
+JPEG_QUALITY = 85  # JPEG compression quality - restored for better image clarity
 SINGLE_PERSON_TARGET = True  # Force one primary person for stable single-subject RULA
 last_inference_result = None  # Cache last inference result for skipped frames
 last_rula_data = None  # Cache latest RULA assessment data for JSON API
 current_fps = 0.0  # Current actual FPS for performance monitoring
+
+# /process_frame inference throttling: skip YOLO on rapid-fire calls, reuse cached keypoints
+last_inference_time_pf = 0  # Timestamp of last YOLO run for /process_frame
+MIN_INFERENCE_INTERVAL_PF = 0.5  # Min seconds between YOLO inferences (2 FPS inference cap)
+is_inferring = False  # Lock for async inference thread
 
 # Stability settings for less jittery posture estimation
 ANGLE_EMA_ALPHA = 0.25  # Lower = more stable, higher = more responsive
@@ -107,44 +126,6 @@ def smooth_angle_value(key, current_value, alpha=ANGLE_EMA_ALPHA):
         smoothed = (alpha * float(current_value)) + ((1.0 - alpha) * float(previous_value))
     posture_stability_state[key] = smoothed
     return smoothed
-
-
-def _open_camera_async():
-    """Open and configure camera in a background thread to keep /start responsive."""
-    global cap, camera_state, camera_error
-
-    local_cap = None
-    try:
-        # On Windows, CAP_DSHOW usually opens faster; fallback to default backend.
-        local_cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        if not local_cap.isOpened():
-            local_cap.release()
-            local_cap = cv2.VideoCapture(0)
-
-        if not local_cap.isOpened():
-            raise RuntimeError("Failed to open camera")
-
-        local_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        local_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        local_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        local_cap.set(cv2.CAP_PROP_FPS, 30)
-
-        with camera_lock:
-            cap = local_cap
-            camera_state = "active"
-            camera_error = None
-
-        print("✓ Webcam started successfully")
-    except Exception as e:
-        if local_cap is not None:
-            local_cap.release()
-
-        with camera_lock:
-            cap = None
-            camera_state = "error"
-            camera_error = str(e)
-
-        print(f"✗ Error starting camera: {e}")
 
 # ============================================================================
 # POSE MODEL LOADING
@@ -1445,129 +1426,6 @@ def draw_pose_and_rula(frame, keypoints, conf_threshold=0.5, debug=False, draw_o
     return frame, rula_result_to_return
 
 # ============================================================================
-# FLASK VIDEO STREAMING
-# ============================================================================
-
-def generate_frames():
-    """
-    Generator function that yields video frames with pose analysis.
-    This function captures frames from the webcam, processes them with YOLO,
-    and streams them to the client.
-    
-    PERFORMANCE OPTIMIZATIONS:
-    - Frame skipping: Process every Nth frame to reduce CPU load
-    - Resolution scaling: Downscale for inference, keep original for display
-    - FPS limiting: Control frame rate to prevent overwhelming the client
-    - JPEG compression: Reduce quality slightly for faster encoding/transmission
-    """
-    global cap, model, previous_keypoints_dict, last_inference_result, last_rula_data, current_fps
-    
-    frame_count = 0
-    fps_update_interval = 1.0  # Update FPS every 1 second
-    fps_frame_count = 0
-    fps_last_update = time.time()
-    
-    while True:
-        if cap is None or not cap.isOpened():
-            time.sleep(0.05)
-            continue
-            
-        success, frame = cap.read()
-        
-        if not success:
-            break
-        
-        # Calculate actual FPS
-        fps_frame_count += 1
-        fps_current_time = time.time()
-        fps_elapsed = fps_current_time - fps_last_update
-        if fps_elapsed >= fps_update_interval:
-            current_fps = fps_frame_count / fps_elapsed
-            fps_frame_count = 0
-            fps_last_update = fps_current_time
-        
-        try:
-            # OPTIMIZATION: Frame skipping - only process every Nth frame
-            if frame_count % FRAME_SKIP == 0:
-                # Get original frame dimensions
-                orig_height, orig_width = frame.shape[:2]
-                
-                # OPTIMIZATION: Downscale frame for inference (faster processing)
-                scale_factor = INFERENCE_SIZE / orig_width
-                inference_height = int(orig_height * scale_factor)
-                inference_frame = cv2.resize(frame, (INFERENCE_SIZE, inference_height))
-                
-                # Run YOLOv8-Pose inference WITHOUT tracking (faster on CPU)
-                results = model.predict(inference_frame, verbose=False, half=False, max_det=1)
-                
-                # Apply simple exponential smoothing (no tracking IDs needed)
-                smoothed_keypoints = None
-                if len(results) > 0 and results[0].keypoints is not None:
-                    # Keep full keypoint format (x, y, confidence) for downstream RULA logic
-                    current_kp = results[0].keypoints.data.cpu().numpy()
-                    if len(previous_keypoints_dict) > 0 and 'last' in previous_keypoints_dict:
-                        prev_kp = previous_keypoints_dict['last']
-                        # If person count changes between frames, skip blend to avoid shape issues.
-                        if prev_kp.shape == current_kp.shape:
-                            smoothed_keypoints = 0.55 * current_kp + 0.45 * prev_kp
-                        else:
-                            smoothed_keypoints = current_kp
-                    else:
-                        smoothed_keypoints = current_kp
-                    previous_keypoints_dict['last'] = current_kp
-                
-                # Extract keypoints (use smoothed)
-                keypoints = smoothed_keypoints if smoothed_keypoints is not None else None
-                
-                # Scale keypoints back to original frame size
-                if keypoints is not None:
-                    keypoints_scaled = keypoints.copy()
-                    keypoints_scaled[:, :, 0] *= (orig_width / INFERENCE_SIZE)  # Scale x coordinates
-                    keypoints_scaled[:, :, 1] *= (orig_height / inference_height)  # Scale y coordinates
-
-                    # Enforce single-person RULA target for stability.
-                    if SINGLE_PERSON_TARGET:
-                        target_person = select_primary_person(keypoints_scaled, frame_width=orig_width)
-                        last_inference_result = target_person
-                    else:
-                        last_inference_result = keypoints_scaled
-                else:
-                    last_inference_result = None
-            
-            # Draw pose and RULA analysis using cached result (smooth for skipped frames)
-            if last_inference_result is not None:
-                frame, rula_data = draw_pose_and_rula(frame, last_inference_result, conf_threshold=0.5, draw_overlay=False)
-                # Store RULA data globally for JSON API endpoint
-                if rula_data is not None:
-                    last_rula_data = rula_data
-            else:
-                # No person detected - clear RULA data
-                last_rula_data = {"detected": False, "message": "No person detected"}
-                # Display message if no person detected (bottom-left)
-                frame_height = frame.shape[0]
-                cv2.putText(frame, "No person detected", (20, frame_height - 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        
-        except Exception as e:
-            # Minimal error output to avoid console spam (bottom-left)
-            frame_height = frame.shape[0]
-            cv2.putText(frame, "Processing error", (20, frame_height - 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        
-        # OPTIMIZATION: Encode frame as JPEG with reduced quality for faster transmission
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
-        ret, buffer = cv2.imencode('.jpg', frame, encode_param)
-        if not ret:
-            continue
-            
-        frame_bytes = buffer.tobytes()
-        frame_count += 1
-        
-        # Yield frame in multipart format
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-
-# ============================================================================
 # FLASK ROUTES
 # ============================================================================
 
@@ -1579,28 +1437,22 @@ def index():
         "version": "1.0.0",
         "endpoints": {
             "/": "API information",
-            "/video": "Video stream with pose analysis",
             "/rula_data": "Latest RULA assessment data (JSON)",
             "/status": "System status",
             "/evaluation/record": "POST ground-truth label (and optional predicted label)",
             "/evaluation/result": "Evaluation metrics and confusion matrix",
-            "/evaluation/reset": "Reset evaluation counters"
+            "/evaluation/reset": "Reset evaluation counters",
+            "/process_frame": "POST frame to get YOLO tracking and analysis"
         }
     })
-
-@app.route('/video')
-def video():
-    """Video streaming route."""
-    return Response(generate_frames(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/status')
 def status():
     """Check system status."""
-    global cap, model, camera_state, camera_error
+    global model, camera_state, camera_error
     return jsonify({
         "model_loaded": model is not None,
-        "camera_active": cap is not None and cap.isOpened(),
+        "camera_active": camera_state == 'active',
         "camera_state": camera_state,
         "camera_error": camera_error
     })
@@ -1691,38 +1543,11 @@ def evaluation_reset():
 
 import base64
 
-@app.route('/process_frame', methods=['POST'])
-def process_frame():
-    """Receive frame from frontend, process with YOLO, return annotated frame."""
-    global model, last_rula_data, previous_keypoints_dict, last_inference_result
-
-    if model is None:
-        return jsonify({"error": "Model not loaded"}), 503
-
+def run_yolo_async(inference_frame, orig_width, orig_height, inference_height):
+    global last_inference_result, previous_keypoints_dict, is_inferring, model
     try:
-        data = request.json
-        if not data or 'image' not in data:
-            return jsonify({"error": "No image data"}), 400
-
-        # Extract base64 part
-        image_data = data['image']
-        if ',' in image_data:
-            image_data = image_data.split(',')[1]
-
-        # Decode base64 to OpenCV frame
-        img_bytes = base64.b64decode(image_data)
-        np_arr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-        orig_height, orig_width = frame.shape[:2]
-
-        # Downscale for inference
-        scale_factor = INFERENCE_SIZE / orig_width
-        inference_height = int(orig_height * scale_factor)
-        inference_frame = cv2.resize(frame, (INFERENCE_SIZE, inference_height))
-
         # Run YOLO inference
-        results = model.predict(inference_frame, verbose=False, half=False, max_det=1)
+        results = model.predict(inference_frame, verbose=False, half=False, max_det=1, imgsz=INFERENCE_SIZE)
 
         smoothed_keypoints = None
         if len(results) > 0 and results[0].keypoints is not None:
@@ -1751,7 +1576,61 @@ def process_frame():
                 last_inference_result = keypoints_scaled
         else:
             last_inference_result = None
+    except Exception as e:
+        print(f"Async inference error: {e}")
+    finally:
+        is_inferring = False
 
+@app.route('/process_frame', methods=['POST'])
+def process_frame():
+    """Receive frame from frontend, process with YOLO, return annotated frame.
+
+    Uses time-based inference throttling: YOLO only runs when enough time has
+    elapsed since the last inference. Intermediate frames reuse cached keypoints
+    for drawing, keeping the visual smooth without overloading the CPU.
+    """
+    global model, last_rula_data, previous_keypoints_dict, last_inference_result
+    global last_inference_time_pf, is_inferring
+
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 503
+
+    try:
+        data = request.json
+        if not data or 'image' not in data:
+            return jsonify({"error": "No image data"}), 400
+
+        # Extract base64 part
+        image_data = data['image']
+        if ',' in image_data:
+            image_data = image_data.split(',')[1]
+
+        # Decode base64 to OpenCV frame
+        img_bytes = base64.b64decode(image_data)
+        np_arr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        orig_height, orig_width = frame.shape[:2]
+
+        # Time-based inference throttling: skip YOLO when called too frequently.
+        # Intermediate frames reuse cached last_inference_result for annotation.
+        current_time = time.time()
+        should_infer = (current_time - last_inference_time_pf) >= MIN_INFERENCE_INTERVAL_PF
+
+        if should_infer and not is_inferring:
+            last_inference_time_pf = current_time
+            is_inferring = True
+
+            # Downscale for inference
+            scale_factor = INFERENCE_SIZE / orig_width
+            inference_height = int(orig_height * scale_factor)
+            inference_frame = cv2.resize(frame, (INFERENCE_SIZE, inference_height))
+
+            threading.Thread(target=run_yolo_async, args=(
+                inference_frame, orig_width, orig_height, inference_height
+            ), daemon=True).start()
+
+        # Draw using cached inference result (works for both fresh and skipped frames)
         if last_inference_result is not None:
             frame, rula_data = draw_pose_and_rula(frame, last_inference_result, conf_threshold=0.5, draw_overlay=False)
             if rula_data is not None:
@@ -1775,8 +1654,8 @@ def process_frame():
 
 @app.route('/start', methods=['POST'])
 def start_camera():
-    """Start the webcam."""
-    global model, camera_state, camera_error, camera_start_thread, previous_keypoints_dict, last_inference_result
+    """Update system state when client starts streaming."""
+    global model, camera_state, previous_keypoints_dict, last_inference_result, last_rula_data
 
     if model is None:
         return jsonify({
@@ -1785,72 +1664,41 @@ def start_camera():
         }), 503
 
     with camera_lock:
-        if camera_state == "active" and cap is not None and cap.isOpened():
+        if camera_state == "active":
             return jsonify({
                 'status': 'already_active',
-                'message': 'Camera is already running'
+                'message': 'System is already receiving stream'
             })
 
-        if camera_state == "starting":
-            return jsonify({
-                'status': 'starting',
-                'message': 'Camera is starting'
-            }), 202
-
-        camera_state = "starting"
-        camera_error = None
+        camera_state = "active"
         previous_keypoints_dict = {}
         last_inference_result = None
+        last_rula_data = None
         reset_stability_state()
-        camera_start_thread = threading.Thread(target=_open_camera_async, daemon=True)
-        camera_start_thread.start()
 
-    return jsonify({
-        'status': 'starting',
-        'message': 'Camera start initiated'
-    }), 202
+        return jsonify({
+            'status': 'success',
+            'message': 'Backend ready to receive frames'
+        })
 
 @app.route('/stop', methods=['POST'])
 def stop_camera():
-    """Stop the webcam and release the camera resource."""
-    global cap, last_rula_data, camera_state, camera_error, previous_keypoints_dict, last_inference_result
+    """Update system state when client stops streaming."""
+    global camera_state, last_rula_data, previous_keypoints_dict, last_inference_result
 
-    local_cap = None
     with camera_lock:
-        if cap is None and camera_state in ("inactive", "error"):
-            camera_state = "inactive"
-            camera_error = None
-            return jsonify({
-                'status': 'already_inactive',
-                'message': 'Camera is not running'
-            })
-
-        local_cap = cap
-        cap = None
         camera_state = "inactive"
-        camera_error = None
-
-    try:
-        if local_cap is not None:
-            local_cap.release()  # This turns off the camera light
-
-        # Clear RULA data when camera stops
+        
+        # Clear Data
         last_rula_data = None
         previous_keypoints_dict = {}
         last_inference_result = None
         reset_stability_state()
 
-        print("✓ Webcam stopped and released")
         return jsonify({
             'status': 'success',
-            'message': 'Camera stopped successfully'
+            'message': 'Receiving stopped'
         })
-    except Exception as e:
-        print(f"✗ Error stopping camera: {e}")
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
 
 # ============================================================================
 # APPLICATION INITIALIZATION AND CLEANUP
@@ -1858,7 +1706,7 @@ def stop_camera():
 
 def initialize_app():
     """Initialize the application - load model only. Camera will be started via /start endpoint."""
-    global model, cap, previous_keypoints_dict
+    global model, previous_keypoints_dict
 
     print("\n" + "="*60)
     print("  Posture RULA Analysis System - Flask Backend")
@@ -1871,27 +1719,24 @@ def initialize_app():
         print("✗ Failed to load model. Exiting.")
         return False
 
-    # Camera will be opened on-demand via /start endpoint
     print("✓ Model loaded successfully")
-    print("  ℹ  Camera will be started when you click 'Aktifkan Webcam' in the frontend")
+    print("  ℹ  Client device camera will be used via browser")
 
     # Initialize tracking dictionary
     previous_keypoints_dict = {}
 
     print(f"\nOptimization settings:")
-    print(f"  - Frame skip: {FRAME_SKIP} (process every {FRAME_SKIP}{'nd' if FRAME_SKIP == 2 else 'rd' if FRAME_SKIP == 3 else 'th'} frame)")
     print(f"  - Inference size: {INFERENCE_SIZE}px width")
-    print(f"  - Target FPS: {TARGET_FPS}")
-    print(f"  - JPEG quality: {JPEG_QUALITY}%")
+    print(f"  - JPEG decoding quality managed by client")
 
     print("\n" + "="*60)
     print("  System Ready!")
     print("="*60)
     print("\nFlask server starting...")
     print("API Endpoints:")
-    print("  - POST /start  : Start camera")
-    print("  - POST /stop   : Stop camera and turn off light")
-    print("  - GET  /video  : Video stream (after starting camera)")
+    print("  - POST /start  : Notify backend to start session")
+    print("  - POST /stop   : Notify backend to stop session")
+    print("  - POST /process_frame : Receive frame & return RULA result")
     print("  - GET  /status : Check system status")
     print("  - GET  /rula_data : Get latest RULA assessment")
     print("\nPress Ctrl+C to stop the server\n")
@@ -1900,10 +1745,7 @@ def initialize_app():
 
 def cleanup():
     """Cleanup resources on shutdown."""
-    global cap
-    if cap is not None:
-        cap.release()
-        print("\n✓ Webcam released")
+    print("\n✓ Backend shutdown sequence complete")
 
 # ============================================================================
 # MAIN ENTRY POINT
