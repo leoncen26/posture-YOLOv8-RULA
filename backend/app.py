@@ -700,11 +700,14 @@ def _compute_metrics_from_confusion(matrix):
         "correct": 0
     }
 
+    total_samples = sum(sum(row) for row in matrix)
+
     per_class = []
     for idx in range(4):
         tp = matrix[idx][idx]
         fp = sum(matrix[row][idx] for row in range(4)) - tp
         fn = sum(matrix[idx]) - tp
+        tn = total_samples - tp - fp - fn
         denom_p = tp + fp
         denom_r = tp + fn
         precision = (tp / denom_p) if denom_p > 0 else 0.0
@@ -714,6 +717,10 @@ def _compute_metrics_from_confusion(matrix):
         per_class.append({
             "label_id": idx + 1,
             "label": EVAL_LABELS[idx + 1],
+            "tp": int(tp),
+            "fp": int(fp),
+            "fn": int(fn),
+            "tn": int(tn),
             "precision": round(precision, 4),
             "recall": round(recall, 4),
             "f1": round(f1, 4),
@@ -724,12 +731,16 @@ def _compute_metrics_from_confusion(matrix):
         totals["correct"] += tp
 
     accuracy = (totals["correct"] / totals["total_samples"]) if totals["total_samples"] > 0 else 0.0
+    error_count = totals["total_samples"] - totals["correct"]
+    error_rate = (error_count / totals["total_samples"]) if totals["total_samples"] > 0 else 0.0
     macro_precision = sum(item["precision"] for item in per_class) / 4
     macro_recall = sum(item["recall"] for item in per_class) / 4
     macro_f1 = sum(item["f1"] for item in per_class) / 4
 
     return {
         "accuracy": round(accuracy, 4),
+        "error_rate": round(error_rate, 4),
+        "error_count": int(error_count),
         "precision_macro": round(macro_precision, 4),
         "recall_macro": round(macro_recall, 4),
         "f1_macro": round(macro_f1, 4),

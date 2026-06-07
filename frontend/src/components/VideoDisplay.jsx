@@ -8,13 +8,14 @@
 
 import VideoPanel from './VideoPanel';
 
-const VideoDisplay = ({ videoUrl, isActive }) => {
+const VideoDisplay = ({ videoUrl, isActive, rulaData }) => {
   return (
     <div className="w-full">
       {/* Single video panel displaying backend-processed stream */}
       <VideoPanel
         videoUrl={videoUrl}
         isActive={isActive}
+        rulaData={rulaData}
       />
       
       {/* Info Panel - Shows what the backend is analyzing */}

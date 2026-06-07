@@ -6,8 +6,8 @@
  */
 
 // Backend server configuration
-// export const BACKEND_URL = 'http://127.0.0.1:5000';
-export const BACKEND_URL = 'https://yearly-recorders-workflow-pioneer.trycloudflare.com';
+export const BACKEND_URL = 'http://127.0.0.1:5000';
+// export const BACKEND_URL = 'https://describe-safer-rec-entertaining.trycloudflare.com';
 
 // API endpoints
 export const API_ENDPOINTS = {

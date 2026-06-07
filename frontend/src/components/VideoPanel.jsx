@@ -7,7 +7,13 @@
  * so this component simply displays the processed stream.
  */
 
-const VideoPanel = ({ videoUrl, isActive }) => {
+const getRiskColor = (color) => {
+  if (!color || color.length !== 3) return '#111827';
+  const [b, g, r] = color;
+  return `rgb(${r}, ${g}, ${b})`;
+};
+
+const VideoPanel = ({ videoUrl, isActive, rulaData }) => {
   return (
     <div className="relative w-full bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
       {/* Placeholder/Inactive State */}
@@ -46,6 +52,17 @@ const VideoPanel = ({ videoUrl, isActive }) => {
             className="w-full h-auto object-contain bg-gray-900"
             style={{ maxHeight: '69vh' }}
           />
+
+          {/* Optional overlay: quick RULA grand score badge (delete this block to remove) */}
+          {rulaData?.detected && Number.isFinite(rulaData?.final_score) && (
+            <div className="absolute right-4 top-1/2 -translate-y-1/2 bg-white/85 text-gray-900 border border-gray-200 rounded-xl px-3 py-2 text-center shadow-sm backdrop-blur">
+              <div className="text-[10px] uppercase tracking-wide text-gray-500 font-semibold">RULA</div>
+              <div className="text-3xl font-bold leading-none" style={{ color: getRiskColor(rulaData?.color) }}>
+                {rulaData.final_score}
+              </div>
+              <div className="text-[10px] text-gray-500">Grand Score</div>
+            </div>
+          )}
           
           {/* Live Indicator */}
           <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/80 text-white px-3 py-1.5 rounded-full text-xs font-semibold tracking-wide border border-white/20">

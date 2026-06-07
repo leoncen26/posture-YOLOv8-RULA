@@ -106,7 +106,7 @@ function App() {
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px] gap-4 items-start flex-1">
           {/* Video Display - Shows Flask backend processed stream */}
           <div className="min-w-0 xl:pr-1">
-            <VideoDisplay videoUrl={videoUrl} isActive={isActive} />
+            <VideoDisplay videoUrl={videoUrl} isActive={isActive} rulaData={rulaData} />
           </div>
 
           {/* RULA Assessment + Control */}
